@@ -305,7 +305,7 @@ export default function App() {
             
             {/* 1. Dashboard Tab */}
             {activeTab === 'dashboard' && (
-              <Dashboard state={state} onSetTab={setActiveTab} />
+              <Dashboard state={state} onSetTab={setActiveTab} onChangeState={handleUpdateState} />
             )}
 
             {/* 2. General Ledger Accounting */}

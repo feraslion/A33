@@ -181,7 +181,17 @@ export const TRANSLATIONS = {
     downloadBackup: 'تصدير نسخة احتياطية كاملة (JSON/SQL)',
     restoreBackup: 'استعادة البيانات من ملف خارجي',
     addExchangeRate: 'تحديث سعر صرف العملة الحرة',
-    auditLogs: 'سجلات تدقيق الأمان والعمليات (Audit Logs)'
+    auditLogs: 'سجلات تدقيق الأمان والعمليات (Audit Logs)',
+    systemHealth: 'الصحة العامة للنظام',
+    dbStorage: 'حجم تخزين قاعدة البيانات',
+    lastBackup: 'آخر وقت للنسخ الاحتياطي',
+    totalAuditEntries: 'إجمالي سجلات عمليات تدقيق الأمان',
+    healthy: 'سليم',
+    warning: 'تحذير',
+    backupNever: 'لم يتم النسخ الاحتياطي بعد',
+    triggerManualBackup: 'تشغيل نسخ احتياطي يدوي فوراً',
+    backupSuccess: 'تم إنشاء النسخة الاحتياطية بنجاح!',
+    backingUp: 'جاري النسخ الاحتياطي...'
   },
   en: {
     // Nav & General Layout
@@ -360,7 +370,17 @@ export const TRANSLATIONS = {
     downloadBackup: 'Download Full Backup (JSON)',
     restoreBackup: 'Restore System State from File',
     addExchangeRate: 'Update Active Exchange Rates',
-    auditLogs: 'Security Audit Logs'
+    auditLogs: 'Security Audit Logs',
+    systemHealth: 'System Health',
+    dbStorage: 'Database Storage Usage',
+    lastBackup: 'Last Backup Time',
+    totalAuditEntries: 'Total Audit Log Entries',
+    healthy: 'Healthy',
+    warning: 'Warning',
+    backupNever: 'Never',
+    triggerManualBackup: 'Trigger Manual Backup Now',
+    backupSuccess: 'Backup created successfully!',
+    backingUp: 'Backing up...'
   }
 };
 export type TranslationKey = keyof typeof TRANSLATIONS.ar;

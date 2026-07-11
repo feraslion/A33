@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { useState, useEffect } from 'react';
 import {
   TrendingUp,
   TrendingDown,
@@ -12,21 +13,156 @@ import {
   ArrowRightLeft,
   CircleDollarSign,
   PieChart as PieIcon,
-  ShieldAlert
+  ShieldAlert,
+  Database,
+  Calendar,
+  History,
+  ShieldCheck,
+  RefreshCw,
+  CheckCircle
 } from 'lucide-react';
-import { ERPState } from '../data/initialData';
+import { ERPState, logAuditEvent } from '../data/initialData';
 import { getTranslation, TranslationKey } from '../data/translations';
 import { calculateAccountBalances } from '../utils/accounting';
+import {
+  verifyDataIntegrity,
+  generateSQLiteDump,
+  triggerLocalDownload,
+  calculateChecksum,
+  BackupHistoryLog
+} from '../utils/backupService';
 
 interface DashboardProps {
   state: ERPState;
   onSetTab: (tab: string) => void;
+  onChangeState: (updater: (prev: ERPState) => ERPState) => void;
 }
 
-export default function Dashboard({ state, onSetTab }: DashboardProps) {
+export default function Dashboard({ state, onSetTab, onChangeState }: DashboardProps) {
   const lang = state.activeLanguage;
   const isRtl = lang === 'ar';
   const t = (key: TranslationKey) => getTranslation(lang, key);
+
+  // System health database sizing
+  const dbSizeStr = JSON.stringify(state);
+  const dbSizeBytes = new Blob([dbSizeStr]).size;
+  const dbSizeFormatted = dbSizeBytes > 1024 * 1024 
+    ? `${(dbSizeBytes / (1024 * 1024)).toFixed(2)} MB`
+    : `${(dbSizeBytes / 1024).toFixed(1)} KB`;
+
+  // System integrity report
+  const integrity = verifyDataIntegrity(state);
+
+  // Backup logs retrieval
+  const [lastBackupTime, setLastBackupTime] = useState<string | null>(null);
+  const [isBackingUp, setIsBackingUp] = useState(false);
+  const [backupSuccess, setBackupSuccess] = useState(false);
+
+  const fetchBackupInfo = () => {
+    try {
+      const rawSchedule = localStorage.getItem('fatih_erp_backup_schedule');
+      if (rawSchedule) {
+        const schedule = JSON.parse(rawSchedule);
+        if (schedule.lastRun) {
+          setLastBackupTime(schedule.lastRun);
+        }
+      }
+      
+      const rawHistory = localStorage.getItem('fatih_erp_backup_history');
+      if (rawHistory) {
+        const history = JSON.parse(rawHistory);
+        if (history && history.length > 0 && history[0].timestamp) {
+          setLastBackupTime(history[0].timestamp);
+        }
+      }
+    } catch (e) {
+      console.error('Error fetching backup info:', e);
+    }
+  };
+
+  useEffect(() => {
+    fetchBackupInfo();
+  }, []);
+
+  const handleManualBackup = async () => {
+    setIsBackingUp(true);
+    setBackupSuccess(false);
+
+    // Artificial short delay to provide smooth interaction feedback
+    await new Promise(resolve => setTimeout(resolve, 800));
+
+    try {
+      const dump = generateSQLiteDump(state);
+      const filename = `Fatih_ERP_Backup_Manual_${Date.now()}.sql`;
+      const sizeBytes = new Blob([dump]).size;
+      const checksum = calculateChecksum(dump);
+      const currentIntegrity = verifyDataIntegrity(state);
+
+      // Trigger standard browser download for high fidelity offline storage
+      triggerLocalDownload(dump, filename);
+
+      // Record in local cache backups table
+      try {
+        const localBackupsKey = 'fatih_erp_local_cache_backups';
+        const existingLocalRaw = localStorage.getItem(localBackupsKey);
+        const existingLocal = existingLocalRaw ? JSON.parse(existingLocalRaw) : {};
+        existingLocal[filename] = dump;
+        
+        const keys = Object.keys(existingLocal);
+        if (keys.length > 3) {
+          const sortedKeys = keys.sort();
+          delete existingLocal[sortedKeys[0]];
+        }
+        localStorage.setItem(localBackupsKey, JSON.stringify(existingLocal));
+      } catch (err) {
+        console.warn('Local Cache registry issue:', err);
+      }
+
+      // Add to backup history log
+      const rawHistory = localStorage.getItem('fatih_erp_backup_history');
+      const history = rawHistory ? JSON.parse(rawHistory) : [];
+      const newLog: BackupHistoryLog = {
+        id: `back_manual_${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        format: 'sqlite',
+        target: 'local',
+        status: 'success',
+        sizeBytes,
+        filename,
+        checksum,
+        integrityReport: {
+          isPristine: currentIntegrity.isPristine,
+          ledgerBalanced: currentIntegrity.ledgerBalanced,
+          debitCreditDiff: currentIntegrity.debitCreditDiff,
+          unresolvedSyncs: currentIntegrity.unresolvedSyncs,
+          orphanedInvoicesCount: currentIntegrity.orphanedInvoicesCount
+        }
+      };
+      const updatedHistory = [newLog, ...history].slice(0, 100);
+      localStorage.setItem('fatih_erp_backup_history', JSON.stringify(updatedHistory));
+
+      // Refresh last backup time locally
+      setLastBackupTime(newLog.timestamp);
+
+      // Record in system audit logs and update app state
+      onChangeState(prev => logAuditEvent(
+        prev,
+        'نسخ احتياطي يدوي فوري',
+        'Instant Manual Backup Triggered',
+        `تم إنشاء نسخة احتياطية فورية وحفظها محلياً بصيغة SQL وحجم ${(sizeBytes / 1024).toFixed(2)} KB. حالة الأمان: ${currentIntegrity.isPristine ? 'سليم' : 'تحذير'}`,
+        `Triggered manual high-fidelity SQL database dump of size ${(sizeBytes / 1024).toFixed(2)} KB. Integrity: ${currentIntegrity.isPristine ? 'Pristine' : 'Warning'}.`
+      ));
+
+      setBackupSuccess(true);
+      setTimeout(() => {
+        setBackupSuccess(false);
+      }, 3500);
+    } catch (e) {
+      console.error('Manual backup failed:', e);
+    } finally {
+      setIsBackingUp(false);
+    }
+  };
 
   // Dynamic calculations
   // 1. Total Sales
@@ -291,7 +427,7 @@ export default function Dashboard({ state, onSetTab }: DashboardProps) {
       </div>
 
       {/* Subsystems alerts & logs */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         {/* Low Stock Alerts */}
         <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 p-5 rounded-xl shadow-xs">
           <h3 className="text-md font-bold text-gray-800 dark:text-white mb-4 flex items-center gap-2 border-b border-gray-100 dark:border-gray-800 pb-3">
@@ -348,6 +484,134 @@ export default function Dashboard({ state, onSetTab }: DashboardProps) {
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+
+        {/* System Health Dashboard Widget */}
+        <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 p-5 rounded-xl shadow-xs flex flex-col justify-between">
+          <h3 className="text-md font-bold text-gray-800 dark:text-white mb-4 flex items-center gap-2 border-b border-gray-100 dark:border-gray-800 pb-3">
+            <Activity className="w-4.5 h-4.5 text-emerald-500 animate-pulse" />
+            {t('systemHealth')}
+          </h3>
+          
+          <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-1 gap-3.5 my-1 flex-1">
+            {/* Database Storage Metric */}
+            <div className="flex flex-col justify-between p-3.5 bg-indigo-50/20 dark:bg-indigo-950/5 border border-indigo-100/30 dark:border-indigo-900/20 rounded-xl hover:shadow-2xs transition-all duration-200">
+              <div className="flex items-start gap-2.5">
+                <div className="p-2 bg-indigo-100 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400 rounded-lg shrink-0">
+                  <Database className="w-4 h-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] font-bold text-gray-800 dark:text-gray-200 uppercase tracking-wider">{t('dbStorage')}</p>
+                  <p className="text-[10px] text-gray-400 dark:text-gray-500 truncate mt-0.5">
+                    {isRtl ? 'المساحة المستهلكة في المتصفح' : 'Browser storage occupied'}
+                  </p>
+                </div>
+              </div>
+              <div className="mt-3 pt-2.5 border-t border-indigo-100/10 dark:border-indigo-900/10 flex items-baseline justify-between">
+                <span className="text-[10px] text-gray-400 dark:text-gray-500">{isRtl ? 'الحجم الحالي' : 'Current size'}</span>
+                <span className="text-xs font-mono font-bold text-indigo-600 dark:text-indigo-400">
+                  {dbSizeFormatted}
+                </span>
+              </div>
+            </div>
+
+            {/* Last Backup Metric */}
+            <div className="flex flex-col justify-between p-3.5 bg-amber-50/20 dark:bg-amber-950/5 border border-amber-100/30 dark:border-amber-900/20 rounded-xl hover:shadow-2xs transition-all duration-200">
+              <div className="flex items-start gap-2.5">
+                <div className="p-2 bg-amber-100/70 dark:bg-amber-950 text-amber-600 dark:text-amber-400 rounded-lg shrink-0">
+                  <Calendar className="w-4 h-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] font-bold text-gray-800 dark:text-gray-200 uppercase tracking-wider">{t('lastBackup')}</p>
+                  <p className="text-[10px] text-gray-400 dark:text-gray-500 truncate mt-0.5">
+                    {isRtl ? 'آخر نسخ احتياطي ناجح' : 'Last successful database dump'}
+                  </p>
+                </div>
+              </div>
+              <div className="mt-3 pt-2.5 border-t border-amber-100/10 dark:border-amber-900/10 flex items-baseline justify-between">
+                <span className="text-[10px] text-gray-400 dark:text-gray-500">{isRtl ? 'توقيت الحفظ' : 'Timestamp'}</span>
+                <span className="text-xs font-semibold text-amber-600 dark:text-amber-400">
+                  {lastBackupTime ? (
+                    new Date(lastBackupTime).toLocaleTimeString(isRtl ? 'ar-SY' : 'en-US', {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      second: '2-digit'
+                    })
+                  ) : (
+                    t('backupNever')
+                  )}
+                </span>
+              </div>
+            </div>
+
+            {/* Total Audit Logs Metric */}
+            <div className="flex flex-col justify-between p-3.5 bg-emerald-50/20 dark:bg-emerald-950/5 border border-emerald-100/30 dark:border-emerald-900/20 rounded-xl hover:shadow-2xs transition-all duration-200">
+              <div className="flex items-start gap-2.5">
+                <div className="p-2 bg-emerald-100/70 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-400 rounded-lg shrink-0">
+                  <History className="w-4 h-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] font-bold text-gray-800 dark:text-gray-200 uppercase tracking-wider">{t('totalAuditEntries')}</p>
+                  <p className="text-[10px] text-gray-400 dark:text-gray-500 truncate mt-0.5">
+                    {isRtl ? 'سجلات تدقيق الأمان المسجلة' : 'Recorded security operations'}
+                  </p>
+                </div>
+              </div>
+              <div className="mt-3 pt-2.5 border-t border-emerald-100/10 dark:border-emerald-900/10 flex items-baseline justify-between">
+                <span className="text-[10px] text-gray-400 dark:text-gray-500">{isRtl ? 'إجمالي السجلات' : 'Total records'}</span>
+                <span className="text-xs font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                  {state.auditLogs.length} {isRtl ? 'عملية' : 'ops'}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Manual Backup Action Button */}
+          <div className="mt-4 pt-3 border-t border-gray-100 dark:border-gray-800">
+            <button
+              onClick={handleManualBackup}
+              disabled={isBackingUp}
+              className={`w-full flex items-center justify-center gap-2 px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer ${
+                isBackingUp 
+                  ? 'bg-gray-100 text-gray-400 cursor-not-allowed dark:bg-gray-850 dark:text-gray-600' 
+                  : backupSuccess 
+                    ? 'bg-emerald-500 text-white shadow-md shadow-emerald-500/10'
+                    : 'bg-indigo-600 text-white hover:bg-indigo-700 active:scale-[0.98] shadow-md shadow-indigo-600/10'
+              }`}
+            >
+              {isBackingUp ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>{t('backingUp')}</span>
+                </>
+              ) : backupSuccess ? (
+                <>
+                  <CheckCircle className="w-4 h-4" />
+                  <span>{t('backupSuccess')}</span>
+                </>
+              ) : (
+                <>
+                  <Database className="w-4 h-4" />
+                  <span>{t('triggerManualBackup')}</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Database Integrity/System Status Indicator */}
+          <div className="mt-4 pt-3 border-t border-gray-100 dark:border-gray-800 flex items-center justify-between text-xs">
+            <span className="text-gray-500 dark:text-gray-400 flex items-center gap-1.5">
+              <ShieldCheck className="w-4 h-4 text-emerald-500" />
+              {isRtl ? 'سلامة البيانات وثبات القيد:' : 'Ledger Integrity Status:'}
+            </span>
+            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+              integrity.isPristine 
+                ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300' 
+                : 'bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300'
+            }`}>
+              {integrity.isPristine ? t('healthy') : t('warning')}
+            </span>
           </div>
         </div>
       </div>
