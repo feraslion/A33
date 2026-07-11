@@ -19,7 +19,10 @@ import {
   History,
   ShieldCheck,
   RefreshCw,
-  CheckCircle
+  CheckCircle,
+  Download,
+  FileSpreadsheet,
+  FileCode
 } from 'lucide-react';
 import { ERPState, logAuditEvent } from '../data/initialData';
 import { getTranslation, TranslationKey } from '../data/translations';
@@ -29,7 +32,8 @@ import {
   generateSQLiteDump,
   triggerLocalDownload,
   calculateChecksum,
-  BackupHistoryLog
+  BackupHistoryLog,
+  convertToCSV
 } from '../utils/backupService';
 
 interface DashboardProps {
@@ -57,6 +61,8 @@ export default function Dashboard({ state, onSetTab, onChangeState }: DashboardP
   const [lastBackupTime, setLastBackupTime] = useState<string | null>(null);
   const [isBackingUp, setIsBackingUp] = useState(false);
   const [backupSuccess, setBackupSuccess] = useState(false);
+  const [downloadFormat, setDownloadFormat] = useState<'sql' | 'csv'>('sql');
+  const [selectedCsvTable, setSelectedCsvTable] = useState<string>('invoices');
 
   const fetchBackupInfo = () => {
     try {
@@ -161,6 +167,128 @@ export default function Dashboard({ state, onSetTab, onChangeState }: DashboardP
       console.error('Manual backup failed:', e);
     } finally {
       setIsBackingUp(false);
+    }
+  };
+
+  const handleDownloadLatestBackup = () => {
+    if (downloadFormat === 'sql') {
+      try {
+        const localBackupsKey = 'fatih_erp_local_cache_backups';
+        const existingLocalRaw = localStorage.getItem(localBackupsKey);
+        const existingLocal = existingLocalRaw ? JSON.parse(existingLocalRaw) : {};
+        const keys = Object.keys(existingLocal);
+        
+        let dump = '';
+        let filename = '';
+        
+        if (keys.length > 0) {
+          const sortedKeys = keys.sort();
+          filename = sortedKeys[keys.length - 1];
+          dump = existingLocal[filename];
+        } else {
+          // Generate an instant database dump if no previous manual backup is in the cache
+          dump = generateSQLiteDump(state);
+          filename = `Fatih_ERP_Backup_Instant_${Date.now()}.sql`;
+        }
+        
+        triggerLocalDownload(dump, filename);
+        
+        onChangeState(prev => logAuditEvent(
+          prev,
+          'تحميل النسخة الاحتياطية (SQL)',
+          'Download Backup (SQL)',
+          `تم تحميل ملف النسخ الاحتياطي SQL للبيانات: ${filename}`,
+          `Downloaded SQL backup file of data: ${filename}`
+        ));
+      } catch (e) {
+        console.error('Error downloading latest SQL backup:', e);
+      }
+    } else {
+      try {
+        let dataToExport: any[] = [];
+        let labelAr = '';
+        let labelEn = '';
+        
+        switch (selectedCsvTable) {
+          case 'invoices':
+            dataToExport = state.invoices;
+            labelAr = 'الفواتير';
+            labelEn = 'Invoices';
+            break;
+          case 'items':
+            dataToExport = state.items;
+            labelAr = 'المستودعات والمخزون';
+            labelEn = 'Inventory Items';
+            break;
+          case 'accounts':
+            dataToExport = state.accounts;
+            labelAr = 'شجرة الحسابات';
+            labelEn = 'Accounts Ledger';
+            break;
+          case 'contacts':
+            dataToExport = state.contacts;
+            labelAr = 'جهات الاتصال';
+            labelEn = 'Contacts';
+            break;
+          case 'cashVouchers':
+            dataToExport = state.cashVouchers;
+            labelAr = 'السندات المالية';
+            labelEn = 'Cash Vouchers';
+            break;
+          case 'journalEntries':
+            dataToExport = state.journalEntries;
+            labelAr = 'القيود اليومية';
+            labelEn = 'Journal Entries';
+            break;
+          case 'posOrders':
+            dataToExport = state.posOrders;
+            labelAr = 'طلبات نقاط البيع';
+            labelEn = 'POS Orders';
+            break;
+          case 'auditLogs':
+            dataToExport = state.auditLogs;
+            labelAr = 'سجلات تدقيق الأمان';
+            labelEn = 'Audit Logs';
+            break;
+          case 'branches':
+            dataToExport = state.branches;
+            labelAr = 'الفروع';
+            labelEn = 'Branches';
+            break;
+          case 'warehouses':
+            dataToExport = state.warehouses;
+            labelAr = 'المستودعات';
+            labelEn = 'Warehouses';
+            break;
+          default:
+            dataToExport = state.invoices;
+            labelAr = 'الفواتير';
+            labelEn = 'Invoices';
+        }
+        
+        const csvContent = convertToCSV(dataToExport);
+        const filename = `Fatih_ERP_Export_${selectedCsvTable}_${Date.now()}.csv`;
+        
+        const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        
+        onChangeState(prev => logAuditEvent(
+          prev,
+          `تحميل جدول ${labelAr} بصيغة CSV`,
+          `Download ${labelEn} CSV`,
+          `تم تصدير وتحميل جدول ${labelAr} بصيغة CSV بنجاح`,
+          `Successfully exported and downloaded table ${labelEn} as CSV.`
+        ));
+      } catch (e) {
+        console.error('Error exporting table to CSV:', e);
+      }
     }
   };
 
@@ -596,6 +724,85 @@ export default function Dashboard({ state, onSetTab, onChangeState }: DashboardP
                   <span>{t('triggerManualBackup')}</span>
                 </>
               )}
+            </button>
+          </div>
+
+          {/* Download Latest Backup Selector and Action */}
+          <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-800 space-y-3">
+            <div className="flex justify-between items-center">
+              <span className="text-xs font-bold text-gray-700 dark:text-gray-300">
+                {isRtl ? 'تحميل النسخة الاحتياطية الأخيرة' : 'Download Latest Backup'}
+              </span>
+              <span className="text-[10px] text-gray-400 dark:text-gray-500">
+                {downloadFormat === 'sql' ? 'Full Database' : 'Selected Table'}
+              </span>
+            </div>
+
+            {/* SQL / CSV Tabs */}
+            <div className="grid grid-cols-2 gap-1.5 p-1 bg-gray-50 dark:bg-gray-800 rounded-lg">
+              <button
+                type="button"
+                onClick={() => setDownloadFormat('sql')}
+                className={`flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                  downloadFormat === 'sql'
+                    ? 'bg-white dark:bg-gray-750 text-indigo-600 dark:text-indigo-400 shadow-xs'
+                    : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+                }`}
+              >
+                <FileCode className="w-3.5 h-3.5" />
+                <span>{isRtl ? 'ملف SQL كامل' : 'SQL Dump'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setDownloadFormat('csv')}
+                className={`flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                  downloadFormat === 'csv'
+                    ? 'bg-white dark:bg-gray-750 text-indigo-600 dark:text-indigo-400 shadow-xs'
+                    : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+                }`}
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>{isRtl ? 'جدول مخصص (CSV)' : 'CSV Export'}</span>
+              </button>
+            </div>
+
+            {/* CSV Options Dropdown */}
+            {downloadFormat === 'csv' && (
+              <div className="space-y-1">
+                <label className="text-[10px] text-gray-500 dark:text-gray-400 font-semibold block">
+                  {isRtl ? 'اختر الجدول لتصديره:' : 'Select Table to Export:'}
+                </label>
+                <select
+                  value={selectedCsvTable}
+                  onChange={(e) => setSelectedCsvTable(e.target.value)}
+                  className="w-full text-xs bg-gray-50 dark:bg-gray-800 text-gray-800 dark:text-gray-200 border border-gray-200 dark:border-gray-700 rounded-lg p-2 focus:ring-1 focus:ring-indigo-500 outline-hidden"
+                >
+                  <option value="invoices">{isRtl ? 'الفواتير (Invoices)' : 'Invoices'}</option>
+                  <option value="items">{isRtl ? 'المستودعات والمخزون (Inventory)' : 'Inventory Items'}</option>
+                  <option value="accounts">{isRtl ? 'شجرة الحسابات (COA)' : 'Accounts Ledger'}</option>
+                  <option value="contacts">{isRtl ? 'جهات الاتصال (Contacts)' : 'Contacts'}</option>
+                  <option value="cashVouchers">{isRtl ? 'السندات المالية (Vouchers)' : 'Cash & Bank Vouchers'}</option>
+                  <option value="journalEntries">{isRtl ? 'القيود اليومية (Journal)' : 'Journal Entries'}</option>
+                  <option value="posOrders">{isRtl ? 'طلبات نقاط البيع (POS)' : 'POS Orders'}</option>
+                  <option value="auditLogs">{isRtl ? 'سجلات الأمان (Audit)' : 'System Audit Logs'}</option>
+                  <option value="branches">{isRtl ? 'الفروع (Branches)' : 'Branches'}</option>
+                  <option value="warehouses">{isRtl ? 'المستودعات (Warehouses)' : 'Warehouses'}</option>
+                </select>
+              </div>
+            )}
+
+            {/* Download Button */}
+            <button
+              onClick={handleDownloadLatestBackup}
+              className="w-full flex items-center justify-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all bg-indigo-50 dark:bg-indigo-950/30 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-950/50 active:scale-[0.98] border border-indigo-100 dark:border-indigo-900/30 cursor-pointer"
+            >
+              <Download className="w-4 h-4" />
+              <span>
+                {downloadFormat === 'sql'
+                  ? (isRtl ? 'تحميل ملف قاعدة البيانات SQL' : 'Download SQL Backup')
+                  : (isRtl ? 'تصدير وتحميل جدول CSV' : 'Export and Download CSV')
+                }
+              </span>
             </button>
           </div>
 

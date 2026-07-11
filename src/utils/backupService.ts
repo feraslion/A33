@@ -327,3 +327,47 @@ export function triggerLocalDownload(content: string, filename: string): void {
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
+
+/**
+ * Converts an array of objects to a standard RFC-4180 compliant CSV string.
+ * Automatically handles string escaping, quotes, commas, and formatting of arrays/objects.
+ */
+export function convertToCSV(data: any[]): string {
+  if (!data || data.length === 0) return '';
+  
+  const allKeys = new Set<string>();
+  data.forEach(item => {
+    if (item && typeof item === 'object') {
+      Object.keys(item).forEach(key => allKeys.add(key));
+    }
+  });
+  
+  const headers = Array.from(allKeys);
+  const csvRows: string[] = [];
+  
+  // Header Row
+  csvRows.push(headers.map(header => `"${header.replace(/"/g, '""')}"`).join(','));
+  
+  // Data Rows
+  data.forEach(item => {
+    const values = headers.map(header => {
+      const val = item[header];
+      if (val === null || val === undefined) {
+        return '""';
+      }
+      
+      let stringVal = '';
+      if (typeof val === 'object') {
+        stringVal = JSON.stringify(val);
+      } else {
+        stringVal = String(val);
+      }
+      
+      const escaped = stringVal.replace(/"/g, '""');
+      return `"${escaped}"`;
+    });
+    csvRows.push(values.join(','));
+  });
+  
+  return csvRows.join('\r\n');
+}

@@ -32,12 +32,5 @@
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.3"
-  },
-  "optionalDependencies": {
-    "@tailwindcss/oxide-darwin-arm64": "^4.1.14",
-    "@tailwindcss/oxide-darwin-x64": "^4.1.14",
-    "@tailwindcss/oxide-linux-x64-gnu": "^4.1.14",
-    "@tailwindcss/oxide-linux-x64-musl": "^4.1.14",
-    "@tailwindcss/oxide-win32-x64-msvc": "^4.1.14"
   }
 }
