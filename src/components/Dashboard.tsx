@@ -33,7 +33,8 @@ import {
   triggerLocalDownload,
   calculateChecksum,
   BackupHistoryLog,
-  convertToCSV
+  convertToCSV,
+  applyBackupRetentionPolicy
 } from '../utils/backupService';
 
 interface DashboardProps {
@@ -157,13 +158,10 @@ export default function Dashboard({ state, onSetTab, onChangeState }: DashboardP
         const existingLocalRaw = localStorage.getItem(localBackupsKey);
         const existingLocal = existingLocalRaw ? JSON.parse(existingLocalRaw) : {};
         existingLocal[filename] = dump;
-        
-        const keys = Object.keys(existingLocal);
-        if (keys.length > 3) {
-          const sortedKeys = keys.sort();
-          delete existingLocal[sortedKeys[0]];
-        }
         localStorage.setItem(localBackupsKey, JSON.stringify(existingLocal));
+        
+        // Apply dynamic retention policy to prune expired backups
+        applyBackupRetentionPolicy();
       } catch (err) {
         console.warn('Local Cache registry issue:', err);
       }

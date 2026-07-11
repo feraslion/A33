@@ -27,7 +27,8 @@ import {
   calculateChecksum,
   BackupScheduleConfig,
   BackupHistoryLog,
-  S3BackupConfig
+  S3BackupConfig,
+  applyBackupRetentionPolicy
 } from './utils/backupService';
 
 // Components
@@ -124,14 +125,10 @@ export default function App() {
               const existingLocalRaw = localStorage.getItem(localBackupsKey);
               const existingLocal = existingLocalRaw ? JSON.parse(existingLocalRaw) : {};
               existingLocal[filename] = dump;
-              
-              // Keep only the last 3 files in the local cache table to avoid exceeding localStorage quota (5MB limit)
-              const keys = Object.keys(existingLocal);
-              if (keys.length > 3) {
-                const sortedKeys = keys.sort();
-                delete existingLocal[sortedKeys[0]]; // remove oldest
-              }
               localStorage.setItem(localBackupsKey, JSON.stringify(existingLocal));
+              
+              // Apply dynamic retention policy to prune expired backups
+              applyBackupRetentionPolicy();
             } catch (err: any) {
               status = 'failed';
               errorMessage = 'QuotaExceeded / Local Cache Failed: ' + (err?.message || '');

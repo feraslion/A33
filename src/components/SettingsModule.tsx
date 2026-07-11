@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Building,
   Coins,
@@ -30,7 +30,9 @@ import {
   calculateChecksum,
   S3BackupConfig,
   BackupScheduleConfig,
-  BackupHistoryLog
+  BackupHistoryLog,
+  BackupRetentionConfig,
+  applyBackupRetentionPolicy
 } from '../utils/backupService';
 
 interface SettingsModuleProps {
@@ -76,6 +78,65 @@ export default function SettingsModule({ state, onChangeState }: SettingsModuleP
   const [manualTarget, setManualTarget] = useState<'local' | 's3'>('local');
   const [isBackingUp, setIsBackingUp] = useState(false);
   const [testStatus, setTestStatus] = useState<{ type: 'idle' | 'success' | 'error' | 'loading', message: string }>({ type: 'idle', message: '' });
+
+  // Retention Policy State
+  const [retentionConfig, setRetentionConfig] = useState<BackupRetentionConfig>(() => {
+    const raw = localStorage.getItem('fatih_erp_backup_retention');
+    return raw ? JSON.parse(raw) : {
+      type: 'files',
+      value: 3
+    };
+  });
+
+  const [localCacheFiles, setLocalCacheFiles] = useState<Record<string, string>>(() => {
+    const raw = localStorage.getItem('fatih_erp_local_cache_backups');
+    return raw ? JSON.parse(raw) : {};
+  });
+
+  const reloadLocalCacheFiles = () => {
+    const raw = localStorage.getItem('fatih_erp_local_cache_backups');
+    setLocalCacheFiles(raw ? JSON.parse(raw) : {});
+  };
+
+  const saveRetentionConfig = (cfg: BackupRetentionConfig) => {
+    setRetentionConfig(cfg);
+    localStorage.setItem('fatih_erp_backup_retention', JSON.stringify(cfg));
+    applyBackupRetentionPolicy(cfg);
+    reloadLocalCacheFiles();
+  };
+
+  const handleSaveRetentionConfig = (type: 'files' | 'days' | 'none', value: number) => {
+    const newConfig: BackupRetentionConfig = { type, value };
+    saveRetentionConfig(newConfig);
+  };
+
+  const handleManualPruning = () => {
+    const result = applyBackupRetentionPolicy(retentionConfig);
+    reloadLocalCacheFiles();
+    alert(isRtl 
+      ? `تمت التصفية بنجاح! تم حذف ${result.deletedCount} ملفات منتهية الصلاحية من الذاكرة المحلية. المتبقي: ${result.remainingCount} ملفات.`
+      : `Cleanup completed! Deleted ${result.deletedCount} expired backup files. Remaining: ${result.remainingCount} files.`);
+  };
+
+  const handleDownloadCachedFile = (filename: string) => {
+    const content = localCacheFiles[filename];
+    if (content) {
+      triggerLocalDownload(content, filename);
+    }
+  };
+
+  const handleDeleteCachedFile = (filename: string) => {
+    if (confirm(isRtl ? `هل أنت متأكد من حذف ملف النسخة الاحتياطية "${filename}" نهائياً من الذاكرة المحلية؟` : `Are you sure you want to permanently delete "${filename}" from local cache?`)) {
+      const updated = { ...localCacheFiles };
+      delete updated[filename];
+      localStorage.setItem('fatih_erp_local_cache_backups', JSON.stringify(updated));
+      reloadLocalCacheFiles();
+    }
+  };
+
+  useEffect(() => {
+    reloadLocalCacheFiles();
+  }, [state]);
 
   const saveS3Config = (cfg: S3BackupConfig) => {
     setS3Config(cfg);
@@ -889,6 +950,213 @@ export default function SettingsModule({ state, onChangeState }: SettingsModuleP
                           <option value="local">Local Cache</option>
                           <option value="s3">S3 Cloud</option>
                         </select>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 3. LOCAL CACHE & RETENTION POLICY */}
+              <div className="p-5 border border-gray-150 dark:border-gray-800 rounded-2xl bg-white dark:bg-gray-950 space-y-4">
+                <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-800 pb-3">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 flex items-center gap-2">
+                    <Database className="w-4 h-4 text-indigo-500" />
+                    {isRtl ? 'سياسة استبقاء النسخ الاحتياطية والذاكرة المحلية' : 'Local Cache Backup Retention Policy'}
+                  </h4>
+                  <span className="text-[10px] bg-indigo-50 dark:bg-indigo-950/20 text-indigo-600 dark:text-indigo-400 px-2.5 py-0.5 rounded-md font-bold uppercase">
+                    {isRtl ? 'حماية من فقدان البيانات' : 'Quota & History Guard'}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
+                  {/* Left Column: Retention Config */}
+                  <div className="md:col-span-5 space-y-4 border-r border-gray-100 dark:border-gray-800 pr-0 md:pr-6 rtl:border-r-0 rtl:border-l rtl:pl-6">
+                    <h5 className="font-bold text-xs text-gray-900 dark:text-white">
+                      {isRtl ? 'إعداد سياسة الاستبقاء المخصصة' : 'Configure Retention Policy'}
+                    </h5>
+                    <p className="text-gray-400 text-[11px] leading-relaxed">
+                      {isRtl 
+                        ? 'حدد كيف ترغب في تصفية واستبقاء ملفات النسخ الاحتياطية المخزنة محلياً لضمان عدم تجاوز المساحة القصوى للمتصفح (5 ميغابايت).'
+                        : 'Define how you wish to automatically prune and retain local database backups to optimize space and avoid local storage quota limits.'}
+                    </p>
+
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-[10px] font-bold text-gray-400 uppercase block mb-1">
+                          {isRtl ? 'نوع سياسة الاستبقاء:' : 'Retention Type:'}
+                        </label>
+                        <div className="flex bg-gray-100 dark:bg-gray-800 p-1 rounded-lg gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleSaveRetentionConfig('files', retentionConfig.value)}
+                            className={`flex-1 py-1 text-[11px] font-bold rounded-md cursor-pointer text-center transition-all ${
+                              retentionConfig.type === 'files' 
+                                ? 'bg-indigo-600 text-white shadow-xs' 
+                                : 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-200'
+                            }`}
+                          >
+                            {isRtl ? 'عدد الملفات الأحدث' : 'By Count'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleSaveRetentionConfig('days', retentionConfig.value)}
+                            className={`flex-1 py-1 text-[11px] font-bold rounded-md cursor-pointer text-center transition-all ${
+                              retentionConfig.type === 'days' 
+                                ? 'bg-indigo-600 text-white shadow-xs' 
+                                : 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-200'
+                            }`}
+                          >
+                            {isRtl ? 'عدد الأيام الأخيرة' : 'By Days'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleSaveRetentionConfig('none', retentionConfig.value)}
+                            className={`flex-1 py-1 text-[11px] font-bold rounded-md cursor-pointer text-center transition-all ${
+                              retentionConfig.type === 'none' 
+                                ? 'bg-indigo-600 text-white shadow-xs' 
+                                : 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-200'
+                            }`}
+                          >
+                            {isRtl ? 'بدون تصفية' : 'No Limit'}
+                          </button>
+                        </div>
+                      </div>
+
+                      {retentionConfig.type !== 'none' && (
+                        <div>
+                          <label className="text-[10px] font-bold text-gray-400 uppercase block mb-1">
+                            {retentionConfig.type === 'files' 
+                              ? (isRtl ? 'عدد ملفات النسخ الاحتياطية المراد استبقاؤها:' : 'Number of backup files to keep:')
+                              : (isRtl ? 'عدد الأيام المراد الاحتفاظ بملفاتها:' : 'Number of days to keep backups:')}
+                          </label>
+                          <div className="flex gap-2">
+                            <input
+                              type="number"
+                              min="1"
+                              max={retentionConfig.type === 'files' ? "100" : "365"}
+                              value={retentionConfig.value}
+                              onChange={e => handleSaveRetentionConfig(retentionConfig.type, Math.max(1, Number(e.target.value)))}
+                              className="w-24 px-3 py-1.5 text-xs bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg outline-hidden text-gray-800 dark:text-gray-200 font-bold"
+                            />
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[11px] text-gray-500 font-semibold">
+                                {retentionConfig.type === 'files' 
+                                  ? (isRtl ? 'نسخة احتياطية' : 'backups')
+                                  : (isRtl ? 'يوم' : 'days')}
+                              </span>
+                            </div>
+                          </div>
+                          
+                          {/* Presets */}
+                          <div className="flex flex-wrap gap-1.5 mt-2">
+                            {retentionConfig.type === 'files' ? (
+                              [3, 5, 10, 30].map(val => (
+                                <button
+                                  key={val}
+                                  type="button"
+                                  onClick={() => handleSaveRetentionConfig('files', val)}
+                                  className={`px-2 py-0.5 text-[10px] rounded-md font-bold border transition-colors ${
+                                    retentionConfig.value === val
+                                      ? 'bg-indigo-50 dark:bg-indigo-950/20 border-indigo-200 text-indigo-600'
+                                      : 'border-gray-200 dark:border-gray-700 text-gray-500 hover:bg-gray-50'
+                                  }`}
+                                >
+                                  {val} {isRtl ? 'ملفات' : 'Files'}
+                                </button>
+                              ))
+                            ) : (
+                              [1, 3, 7, 14, 30].map(val => (
+                                <button
+                                  key={val}
+                                  type="button"
+                                  onClick={() => handleSaveRetentionConfig('days', val)}
+                                  className={`px-2 py-0.5 text-[10px] rounded-md font-bold border transition-colors ${
+                                    retentionConfig.value === val
+                                      ? 'bg-indigo-50 dark:bg-indigo-950/20 border-indigo-200 text-indigo-600'
+                                      : 'border-gray-200 dark:border-gray-700 text-gray-500 hover:bg-gray-50'
+                                  }`}
+                                >
+                                  {val} {isRtl ? 'أيام' : 'Days'}
+                                </button>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="pt-2 border-t border-gray-100 dark:border-gray-800">
+                      <button
+                        type="button"
+                        onClick={handleManualPruning}
+                        className="w-full py-1.5 px-3 bg-gray-50 hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 font-extrabold rounded-lg flex items-center justify-center gap-1.5 transition-colors cursor-pointer text-xs"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5 text-gray-400" />
+                        {isRtl ? 'تنظيف الذاكرة وتصفية المنتهي الآن' : 'Trigger Manual Pruning Now'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Right Column: Cached Files List */}
+                  <div className="md:col-span-7 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h5 className="font-bold text-xs text-gray-900 dark:text-white">
+                        {isRtl ? 'ملفات النسخ الاحتياطي بالذاكرة المؤقتة' : 'Local Cache Backup Storage'}
+                      </h5>
+                      <span className="font-bold text-[10px] text-indigo-500">
+                        {isRtl ? 'الإجمالي: ' : 'Total: '} {Object.keys(localCacheFiles).length} {isRtl ? 'ملفات' : 'files'}
+                      </span>
+                    </div>
+
+                    <div className="border border-gray-100 dark:border-gray-800 rounded-xl overflow-hidden">
+                      <div className="overflow-y-auto max-h-[220px] divide-y divide-gray-100 dark:divide-gray-800">
+                        {Object.keys(localCacheFiles).length === 0 ? (
+                          <div className="p-6 text-center text-gray-400 font-bold bg-gray-50/20 dark:bg-gray-950/40">
+                            {isRtl ? 'لا توجد ملفات نسخ احتياطي محلية مخزنة مؤقتاً.' : 'No backup files stored in browser local cache yet.'}
+                          </div>
+                        ) : (
+                          Object.keys(localCacheFiles).map(filename => {
+                            const content = localCacheFiles[filename];
+                            const sizeKbytes = content ? (new Blob([content]).size / 1024).toFixed(2) : '0';
+                            
+                            // Extract timestamp
+                            const match = filename.match(/_(\d+)(?:\.|$)/);
+                            const timestampStr = match 
+                              ? new Date(Number(match[1])).toLocaleString() 
+                              : (isRtl ? 'تاريخ غير معروف' : 'Unknown date');
+
+                            return (
+                              <div key={filename} className="p-3 bg-white dark:bg-gray-950 flex items-center justify-between hover:bg-gray-50/50 dark:hover:bg-gray-800/10">
+                                <div className="space-y-0.5 truncate max-w-[65%]">
+                                  <span className="font-bold text-xs text-gray-800 dark:text-gray-200 block truncate" title={filename}>
+                                    {filename}
+                                  </span>
+                                  <span className="text-[10px] text-gray-400 font-mono block">
+                                    {timestampStr} | {sizeKbytes} KB
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDownloadCachedFile(filename)}
+                                    className="p-1.5 bg-gray-50 hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700 text-indigo-600 dark:text-indigo-400 rounded-md border border-gray-150 dark:border-gray-700 cursor-pointer"
+                                    title={isRtl ? 'تنزيل الملف' : 'Download file'}
+                                  >
+                                    <Download className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteCachedFile(filename)}
+                                    className="p-1.5 bg-red-50 hover:bg-red-100 dark:bg-red-950/20 text-red-600 dark:text-red-400 rounded-md border border-red-100 dark:border-red-950/40 cursor-pointer"
+                                    title={isRtl ? 'حذف من الذاكرة' : 'Delete from cache'}
+                                  >
+                                    <AlertTriangle className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })
+                        )}
                       </div>
                     </div>
                   </div>

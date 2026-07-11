@@ -371,3 +371,97 @@ export function convertToCSV(data: any[]): string {
   
   return csvRows.join('\r\n');
 }
+
+export interface BackupRetentionConfig {
+  type: 'days' | 'files' | 'none';
+  value: number;
+}
+
+/**
+ * Applies the defined backup retention policy to prune local storage cache backups.
+ * Keeps at least one backup file to protect user from losing all data.
+ */
+export function applyBackupRetentionPolicy(
+  retention?: BackupRetentionConfig
+): { deletedCount: number; remainingCount: number } {
+  try {
+    const localBackupsKey = 'fatih_erp_local_cache_backups';
+    const existingLocalRaw = localStorage.getItem(localBackupsKey);
+    if (!existingLocalRaw) return { deletedCount: 0, remainingCount: 0 };
+
+    const existingLocal = JSON.parse(existingLocalRaw);
+    const filenames = Object.keys(existingLocal);
+    if (filenames.length === 0) return { deletedCount: 0, remainingCount: 0 };
+
+    // Parse config from localStorage if not provided
+    if (!retention) {
+      const raw = localStorage.getItem('fatih_erp_backup_retention');
+      retention = raw ? JSON.parse(raw) : { type: 'files', value: 3 }; // default to keep 3 files like before
+    }
+
+    if (retention.type === 'none') {
+      return { deletedCount: 0, remainingCount: filenames.length };
+    }
+
+    // Map files to their parsed timestamps
+    const fileWithTimes = filenames.map(filename => {
+      // Extract the numeric timestamp using regex
+      const match = filename.match(/_(\d+)(?:\.|$)/);
+      let timestamp = 0;
+      if (match) {
+        timestamp = Number(match[1]);
+      } else {
+        // Fallback: search for any sequence of 10-13 digits
+        const altMatch = filename.match(/\d{10,13}/);
+        if (altMatch) {
+          timestamp = Number(altMatch[0]);
+        } else {
+          // If no timestamp can be found, use 0 so it's treated as oldest
+          timestamp = 0;
+        }
+      }
+      return { filename, timestamp };
+    });
+
+    // Sort by timestamp ascending (oldest first)
+    fileWithTimes.sort((a, b) => a.timestamp - b.timestamp);
+
+    const toDelete: string[] = [];
+
+    if (retention.type === 'files') {
+      const maxFiles = Math.max(1, retention.value); // keep at least 1
+      if (fileWithTimes.length > maxFiles) {
+        const deleteCount = fileWithTimes.length - maxFiles;
+        for (let i = 0; i < deleteCount; i++) {
+          toDelete.push(fileWithTimes[i].filename);
+        }
+      }
+    } else if (retention.type === 'days') {
+      const maxDays = Math.max(1, retention.value);
+      const threshold = Date.now() - (maxDays * 24 * 60 * 60 * 1000);
+      
+      // Delete files older than threshold, but keep at least the latest file
+      const oldestPossibleToDeleteCount = fileWithTimes.length - 1; // leave at least the last one
+      for (let i = 0; i < oldestPossibleToDeleteCount; i++) {
+        if (fileWithTimes[i].timestamp < threshold) {
+          toDelete.push(fileWithTimes[i].filename);
+        }
+      }
+    }
+
+    if (toDelete.length > 0) {
+      toDelete.forEach(fn => {
+        delete existingLocal[fn];
+      });
+      localStorage.setItem(localBackupsKey, JSON.stringify(existingLocal));
+    }
+
+    return {
+      deletedCount: toDelete.length,
+      remainingCount: Object.keys(existingLocal).length
+    };
+  } catch (err) {
+    console.error('Error applying backup retention policy:', err);
+    return { deletedCount: 0, remainingCount: 0 };
+  }
+}
