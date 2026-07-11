@@ -1,0 +1,6 @@
+{
+  "name": "Enterprise ERP System",
+  "description": "An enterprise-grade ERP system for accounting, inventory, POS, and sales management with multi-currency and multi-company support.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

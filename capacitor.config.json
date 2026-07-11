@@ -1,0 +1,6 @@
+{
+  "appId": "com.enterprise.erpsystem",
+  "appName": "Enterprise ERP System",
+  "webDir": "dist",
+  "bundledWebRuntime": false
+}
