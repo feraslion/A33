@@ -28,7 +28,10 @@ jobs:
           cache: 'npm'
 
       - name: Install Dependencies
-        run: npm install
+        run: |
+          if (Test-Path package-lock.json) { Remove-Item package-lock.json -Force }
+          npm install
+        shell: pwsh
 
       - name: Build Web Application (React + Vite)
         run: npm run build
@@ -78,7 +81,9 @@ jobs:
           cache: 'npm'
 
       - name: Install Dependencies
-        run: npm install
+        run: |
+          rm -f package-lock.json
+          npm install
 
       - name: Build Web Application (React + Vite)
         run: npm run build

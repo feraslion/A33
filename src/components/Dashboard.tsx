@@ -59,6 +59,7 @@ export default function Dashboard({ state, onSetTab, onChangeState }: DashboardP
 
   // Backup logs retrieval
   const [lastBackupTime, setLastBackupTime] = useState<string | null>(null);
+  const [lastBackupStatus, setLastBackupStatus] = useState<'success' | 'failed' | null>(null);
   const [isBackingUp, setIsBackingUp] = useState(false);
   const [backupSuccess, setBackupSuccess] = useState(false);
   const [downloadFormat, setDownloadFormat] = useState<'sql' | 'csv'>('sql');
@@ -77,8 +78,13 @@ export default function Dashboard({ state, onSetTab, onChangeState }: DashboardP
       const rawHistory = localStorage.getItem('fatih_erp_backup_history');
       if (rawHistory) {
         const history = JSON.parse(rawHistory);
-        if (history && history.length > 0 && history[0].timestamp) {
-          setLastBackupTime(history[0].timestamp);
+        if (history && history.length > 0) {
+          if (history[0].timestamp) {
+            setLastBackupTime(history[0].timestamp);
+          }
+          if (history[0].status) {
+            setLastBackupStatus(history[0].status);
+          }
         }
       }
     } catch (e) {
@@ -89,6 +95,44 @@ export default function Dashboard({ state, onSetTab, onChangeState }: DashboardP
   useEffect(() => {
     fetchBackupInfo();
   }, []);
+
+  const getBackupStatusBadge = () => {
+    // Determine status based on the last backup status stored in the system
+    let status: 'healthy' | 'failed' | 'manual_intervention' = 'manual_intervention';
+    
+    if (lastBackupStatus === 'success') {
+      status = 'healthy';
+    } else if (lastBackupStatus === 'failed') {
+      status = 'failed';
+    } else {
+      status = 'manual_intervention';
+    }
+
+    switch (status) {
+      case 'healthy':
+        return (
+          <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 border border-emerald-200/40 dark:border-emerald-800/20 shadow-2xs">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+            {isRtl ? 'سليم (صحي)' : 'Healthy'}
+          </span>
+        );
+      case 'failed':
+        return (
+          <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400 border border-rose-200/40 dark:border-rose-800/20 shadow-2xs">
+            <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse"></span>
+            {isRtl ? 'فشل الحفظ' : 'Failed'}
+          </span>
+        );
+      case 'manual_intervention':
+      default:
+        return (
+          <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400 border border-amber-200/40 dark:border-amber-800/20 shadow-2xs">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+            {isRtl ? 'مطلوب تدخل يدوي' : 'Manual Intervention'}
+          </span>
+        );
+    }
+  };
 
   const handleManualBackup = async () => {
     setIsBackingUp(true);
@@ -149,6 +193,7 @@ export default function Dashboard({ state, onSetTab, onChangeState }: DashboardP
 
       // Refresh last backup time locally
       setLastBackupTime(newLog.timestamp);
+      setLastBackupStatus('success');
 
       // Record in system audit logs and update app state
       onChangeState(prev => logAuditEvent(
@@ -165,6 +210,34 @@ export default function Dashboard({ state, onSetTab, onChangeState }: DashboardP
       }, 3500);
     } catch (e) {
       console.error('Manual backup failed:', e);
+      setLastBackupStatus('failed');
+      try {
+        const rawHistory = localStorage.getItem('fatih_erp_backup_history');
+        const history = rawHistory ? JSON.parse(rawHistory) : [];
+        const newLog: BackupHistoryLog = {
+          id: `back_manual_failed_${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          format: 'sqlite',
+          target: 'local',
+          status: 'failed',
+          sizeBytes: 0,
+          filename: '',
+          checksum: '',
+          errorMessage: e instanceof Error ? e.message : String(e),
+          integrityReport: {
+            isPristine: false,
+            ledgerBalanced: false,
+            debitCreditDiff: 0,
+            unresolvedSyncs: 0,
+            orphanedInvoicesCount: 0
+          }
+        };
+        const updatedHistory = [newLog, ...history].slice(0, 100);
+        localStorage.setItem('fatih_erp_backup_history', JSON.stringify(updatedHistory));
+        setLastBackupTime(newLog.timestamp);
+      } catch (err) {
+        console.error('Failed to log failed backup in localStorage:', err);
+      }
     } finally {
       setIsBackingUp(false);
     }
@@ -617,9 +690,12 @@ export default function Dashboard({ state, onSetTab, onChangeState }: DashboardP
 
         {/* System Health Dashboard Widget */}
         <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 p-5 rounded-xl shadow-xs flex flex-col justify-between">
-          <h3 className="text-md font-bold text-gray-800 dark:text-white mb-4 flex items-center gap-2 border-b border-gray-100 dark:border-gray-800 pb-3">
-            <Activity className="w-4.5 h-4.5 text-emerald-500 animate-pulse" />
-            {t('systemHealth')}
+          <h3 className="text-md font-bold text-gray-800 dark:text-white mb-4 flex items-center justify-between border-b border-gray-100 dark:border-gray-800 pb-3 gap-2">
+            <div className="flex items-center gap-2">
+              <Activity className="w-4.5 h-4.5 text-emerald-500 animate-pulse" />
+              {t('systemHealth')}
+            </div>
+            {getBackupStatusBadge()}
           </h3>
           
           <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-1 gap-3.5 my-1 flex-1">
