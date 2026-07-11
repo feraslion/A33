@@ -22,7 +22,9 @@ import {
   CheckCircle,
   Download,
   FileSpreadsheet,
-  FileCode
+  FileCode,
+  Bell,
+  BellRing
 } from 'lucide-react';
 import { ERPState, logAuditEvent } from '../data/initialData';
 import { getTranslation, TranslationKey } from '../data/translations';
@@ -66,6 +68,43 @@ export default function Dashboard({ state, onSetTab, onChangeState }: DashboardP
   const [downloadFormat, setDownloadFormat] = useState<'sql' | 'csv'>('sql');
   const [selectedCsvTable, setSelectedCsvTable] = useState<string>('invoices');
 
+  // Notification and simulation states
+  const [backupHistory, setBackupHistory] = useState<BackupHistoryLog[]>([]);
+  const [isNotificationOpen, setIsNotificationOpen] = useState(false);
+  const [simulateBackupFailure, setSimulateBackupFailure] = useState(false);
+  const [simulateStorageLimit, setSimulateStorageLimit] = useState(false);
+
+  // Live localStorage size calculation helper
+  const getLocalStorageSize = () => {
+    let total = 0;
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key) {
+          total += key.length + (localStorage.getItem(key) || '').length;
+        }
+      }
+    } catch (e) {
+      console.warn('Error reading localStorage size:', e);
+    }
+    return total;
+  };
+
+  const totalBytesUsed = getLocalStorageSize();
+  const storageLimitBytes = 5 * 1024 * 1024; // 5MB standard limit
+
+  // If simulation is active, pretend storage usage is 4.75 MB (95%)
+  const displayBytesUsed = simulateStorageLimit ? 4.75 * 1024 * 1024 : totalBytesUsed;
+  const displayPercentUsed = (displayBytesUsed / storageLimitBytes) * 100;
+  const isStorageNearlyReached = displayPercentUsed >= 80;
+
+  // Find last automatic backup failure (history is sorted newest first)
+  const lastAutoBackup = backupHistory.find(log => log.id && log.id.startsWith('back_auto_'));
+  const realAutoBackupFailed = lastAutoBackup && lastAutoBackup.status === 'failed';
+  const isBackupFailedAlert = realAutoBackupFailed || simulateBackupFailure;
+
+  const activeAlertsCount = (isBackupFailedAlert ? 1 : 0) + (isStorageNearlyReached ? 1 : 0);
+
   const fetchBackupInfo = () => {
     try {
       const rawSchedule = localStorage.getItem('fatih_erp_backup_schedule');
@@ -79,6 +118,7 @@ export default function Dashboard({ state, onSetTab, onChangeState }: DashboardP
       const rawHistory = localStorage.getItem('fatih_erp_backup_history');
       if (rawHistory) {
         const history = JSON.parse(rawHistory);
+        setBackupHistory(history || []);
         if (history && history.length > 0) {
           if (history[0].timestamp) {
             setLastBackupTime(history[0].timestamp);
@@ -206,6 +246,9 @@ export default function Dashboard({ state, onSetTab, onChangeState }: DashboardP
       setTimeout(() => {
         setBackupSuccess(false);
       }, 3500);
+      
+      // Update local states/history
+      fetchBackupInfo();
     } catch (e) {
       console.error('Manual backup failed:', e);
       setLastBackupStatus('failed');
@@ -236,6 +279,9 @@ export default function Dashboard({ state, onSetTab, onChangeState }: DashboardP
       } catch (err) {
         console.error('Failed to log failed backup in localStorage:', err);
       }
+      
+      // Update local states/history
+      fetchBackupInfo();
     } finally {
       setIsBackingUp(false);
     }
@@ -688,12 +734,152 @@ export default function Dashboard({ state, onSetTab, onChangeState }: DashboardP
 
         {/* System Health Dashboard Widget */}
         <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 p-5 rounded-xl shadow-xs flex flex-col justify-between">
-          <h3 className="text-md font-bold text-gray-800 dark:text-white mb-4 flex items-center justify-between border-b border-gray-100 dark:border-gray-800 pb-3 gap-2">
+          <h3 className="text-md font-bold text-gray-800 dark:text-white mb-4 flex items-center justify-between border-b border-gray-100 dark:border-gray-800 pb-3 gap-2 relative">
             <div className="flex items-center gap-2">
               <Activity className="w-4.5 h-4.5 text-emerald-500 animate-pulse" />
               {t('systemHealth')}
             </div>
-            {getBackupStatusBadge()}
+            
+            <div className="flex items-center gap-2 relative">
+              {/* Notification Bell Icon button */}
+              <button
+                type="button"
+                onClick={() => setIsNotificationOpen(!isNotificationOpen)}
+                className={`relative p-1.5 rounded-lg border transition-all cursor-pointer ${
+                  activeAlertsCount > 0
+                    ? 'bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 hover:bg-red-100'
+                    : 'bg-gray-50 dark:bg-gray-800/50 border-gray-100 dark:border-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-100'
+                }`}
+                title={isRtl ? 'إشعارات صحة النظام' : 'System Health Notifications'}
+              >
+                {activeAlertsCount > 0 ? (
+                  <BellRing className="w-4 h-4 animate-bounce text-red-500" />
+                ) : (
+                  <Bell className="w-4 h-4" />
+                )}
+                {activeAlertsCount > 0 && (
+                  <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-extrabold text-white animate-pulse">
+                    {activeAlertsCount}
+                  </span>
+                )}
+              </button>
+
+              {/* The Dropdown Panel */}
+              {isNotificationOpen && (
+                <div className={`absolute top-10 z-50 w-80 bg-white dark:bg-gray-950 border border-gray-150 dark:border-gray-800 rounded-xl shadow-lg p-4 space-y-3.5 ${
+                  isRtl ? 'left-0 origin-top-left text-right' : 'right-0 origin-top-right text-left'
+                }`} style={{ direction: isRtl ? 'rtl' : 'ltr' }}>
+                  <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-800 pb-2">
+                    <span className="font-bold text-xs text-gray-800 dark:text-white uppercase tracking-wider">
+                      {isRtl ? 'تنبيهات صحة النظام' : 'System Health Alerts'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setIsNotificationOpen(false)}
+                      className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-xs font-bold font-mono cursor-pointer"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  <div className="space-y-3 max-h-[300px] overflow-y-auto">
+                    {activeAlertsCount === 0 ? (
+                      <div className="text-center py-4 space-y-2">
+                        <ShieldCheck className="w-8 h-8 text-emerald-500 mx-auto" />
+                        <p className="text-xs font-bold text-gray-700 dark:text-gray-300">
+                          {isRtl ? 'جميع الأنظمة تعمل بكفاءة' : 'All systems healthy'}
+                        </p>
+                        <p className="text-[10px] text-gray-400">
+                          {isRtl ? 'لم يتم العثور على أي مشاكل أو تجاوزات في المساحة.' : 'No backup failures or storage space issues detected.'}
+                        </p>
+                      </div>
+                    ) : (
+                      <>
+                        {isBackupFailedAlert && (
+                          <div className="p-3 bg-red-50 dark:bg-red-950/20 border border-red-150 dark:border-red-900 rounded-lg space-y-1.5">
+                            <div className="flex items-center gap-1.5 text-red-700 dark:text-red-400">
+                              <AlertTriangle className="w-4 h-4 shrink-0 text-red-500" />
+                              <span className="text-xs font-bold">
+                                {isRtl ? 'فشل النسخ الاحتياطي التلقائي!' : 'Auto Backup Failed!'}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-red-600 dark:text-red-300 leading-relaxed text-left rtl:text-right">
+                              {isRtl 
+                                ? (lastAutoBackup?.errorMessage || 'فشل الاتصال بمزود التخزين السحابي S3 أو تجاوز حصة الذاكرة المحلية.')
+                                : (lastAutoBackup?.errorMessage || 'S3 Cloud storage endpoint connection failed or local storage quota exceeded.')}
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsNotificationOpen(false);
+                                handleManualBackup();
+                              }}
+                              className="w-full text-center py-1 text-[10px] font-bold bg-red-600 hover:bg-red-700 text-white rounded-md mt-1 cursor-pointer transition-colors"
+                            >
+                              {isRtl ? 'إجراء نسخ احتياطي يدوي الآن' : 'Trigger Manual Backup Now'}
+                            </button>
+                          </div>
+                        )}
+
+                        {isStorageNearlyReached && (
+                          <div className="p-3 bg-amber-50 dark:bg-amber-950/20 border border-amber-150 dark:border-amber-900 rounded-lg space-y-1.5">
+                            <div className="flex items-center gap-1.5 text-amber-700 dark:text-amber-450">
+                              <ShieldAlert className="w-4 h-4 shrink-0 text-amber-500" />
+                              <span className="text-xs font-bold">
+                                {isRtl ? 'مساحة الذاكرة ممتلئة تقريباً!' : 'Storage Space Running Out!'}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-amber-650 dark:text-amber-300 leading-relaxed font-mono text-left rtl:text-right">
+                              {isRtl ? 'الذاكرة المستخدمة: ' : 'Storage Used: '}
+                              { (displayBytesUsed / (1024 * 1024)).toFixed(2) } MB / 5.00 MB ({ displayPercentUsed.toFixed(1) }%)
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsNotificationOpen(false);
+                                onSetTab('settings');
+                              }}
+                              className="w-full text-center py-1 text-[10px] font-bold bg-amber-600 hover:bg-amber-700 text-white rounded-md mt-1 cursor-pointer transition-colors"
+                            >
+                              {isRtl ? 'إدارة سياسة الاستبقاء وتصفية الذاكرة' : 'Configure Retention & Prune Old Backups'}
+                            </button>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+
+                  {/* Dev / Test Toggles for Verification */}
+                  <div className="border-t border-gray-100 dark:border-gray-800 pt-2.5">
+                    <span className="text-[9px] font-bold text-gray-400 uppercase tracking-wide block mb-1.5 text-left rtl:text-right">
+                      {isRtl ? 'محاكاة التنبيهات للاختبار:' : 'Simulation controls (for testing):'}
+                    </span>
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="flex items-center gap-1 text-[10px] text-gray-500 dark:text-gray-400 select-none cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={simulateBackupFailure}
+                          onChange={(e) => setSimulateBackupFailure(e.target.checked)}
+                          className="rounded-sm border-gray-300 dark:border-gray-700 text-indigo-600 focus:ring-0 cursor-pointer"
+                        />
+                        {isRtl ? 'فشل تلقائي' : 'Fail AutoBackup'}
+                      </label>
+                      <label className="flex items-center gap-1 text-[10px] text-gray-500 dark:text-gray-400 select-none cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={simulateStorageLimit}
+                          onChange={(e) => setSimulateStorageLimit(e.target.checked)}
+                          className="rounded-sm border-gray-300 dark:border-gray-700 text-indigo-600 focus:ring-0 cursor-pointer"
+                        />
+                        {isRtl ? 'امتلاء التخزين' : 'Simulate 95% full'}
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {getBackupStatusBadge()}
+            </div>
           </h3>
           
           <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-1 gap-3.5 my-1 flex-1">
