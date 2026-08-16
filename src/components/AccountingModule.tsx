@@ -12,12 +12,17 @@ import {
   CheckCircle,
   Trash2,
   Lock,
-  Coins
+  Coins,
+  Printer,
+  FileText,
+  FileCheck
 } from 'lucide-react';
 import { ERPState, logAuditEvent } from '../data/initialData';
 import { Account, JournalEntry, JournalEntryLine } from '../types';
 import { getTranslation, TranslationKey } from '../data/translations';
 import { calculateAccountBalances } from '../utils/accounting';
+import A4PrintModal from './A4PrintModal';
+import { StatementData } from '../utils/a4PrintService';
 
 interface AccountingModuleProps {
   state: ERPState;
@@ -54,6 +59,70 @@ export default function AccountingModule({ state, onChangeState }: AccountingMod
   const [newAccType, setNewAccType] = useState<'asset' | 'liability' | 'equity' | 'revenue' | 'expense'>('asset');
   const [newAccParent, setNewAccParent] = useState<string>('');
   const [newAccCurrency, setNewAccCurrency] = useState('SYP');
+
+  // A4 Statement Print State
+  const [showA4Modal, setShowA4Modal] = useState(false);
+  const [selectedStatementData, setSelectedStatementData] = useState<StatementData | null>(null);
+
+  const handleOpenA4Statement = (account: Account) => {
+    const isDebitNorm = account.type === 'asset' || account.type === 'expense';
+    let runningBalance = account.balance;
+    let totalDebits = 0;
+    let totalCredits = 0;
+
+    const rows: {
+      date: string;
+      reference: string;
+      description: string;
+      debit: number;
+      credit: number;
+      balance: number;
+    }[] = [];
+
+    state.journalEntries.forEach(je => {
+      je.lines.forEach(line => {
+        if (line.accountCode === account.code) {
+          totalDebits += line.localDebit;
+          totalCredits += line.localCredit;
+          
+          if (isDebitNorm) {
+            runningBalance += (line.localDebit - line.localCredit);
+          } else {
+            runningBalance += (line.localCredit - line.localDebit);
+          }
+
+          rows.push({
+            date: je.entryDate,
+            reference: je.reference,
+            description: isRtl ? (line.memo || je.narrationAr) : (line.memo || je.narrationEn),
+            debit: line.localDebit,
+            credit: line.localCredit,
+            balance: runningBalance
+          });
+        }
+      });
+    });
+
+    const stmt: StatementData = {
+      titleAr: `كشف حركة حساب (${account.code})`,
+      titleEn: `ACCOUNT STATEMENT (${account.code})`,
+      documentNumber: `STMT-${account.code}-${Date.now().toString().slice(-4)}`,
+      partyNameAr: `${account.code} - ${account.nameAr}`,
+      partyNameEn: account.nameEn,
+      accountCode: account.code,
+      periodStart: '2026-01-01',
+      periodEnd: new Date().toISOString().split('T')[0],
+      openingBalance: account.balance,
+      closingBalance: runningBalance,
+      totalDebits,
+      totalCredits,
+      currencyCode: account.currencyCode || 'SYP',
+      rows
+    };
+
+    setSelectedStatementData(stmt);
+    setShowA4Modal(true);
+  };
 
   // Multi-currency calculation helpers inside JE Form
   const handleLineChange = (index: number, field: keyof JournalEntryLine, value: any) => {
@@ -358,9 +427,19 @@ export default function AccountingModule({ state, onChangeState }: AccountingMod
                         {acc.type}
                       </span>
                     </div>
-                    <span className="font-mono font-bold text-right text-gray-900 dark:text-white">
-                      {acc.balance.toLocaleString()} <span className="text-[10px] font-sans text-gray-400">{acc.currencyCode}</span>
-                    </span>
+                    <div className="flex items-center gap-3">
+                      <span className="font-mono font-bold text-right text-gray-900 dark:text-white">
+                        {acc.balance.toLocaleString()} <span className="text-[10px] font-sans text-gray-400">{acc.currencyCode}</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenA4Statement(acc)}
+                        className="p-1.5 text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 rounded-md hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors cursor-pointer"
+                        title={isRtl ? 'طباعة كشف حساب A4 رسمي فائق الدقة' : 'Print Official A4 Statement (Canvas PDF)'}
+                      >
+                        <FileCheck className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
                 );
               })}
@@ -723,6 +802,20 @@ export default function AccountingModule({ state, onChangeState }: AccountingMod
             </form>
           </div>
         </div>
+      )}
+      {/* A4 High-Resolution Statement Print Modal */}
+      {showA4Modal && selectedStatementData && (
+        <A4PrintModal
+          isOpen={showA4Modal}
+          onClose={() => {
+            setShowA4Modal(false);
+            setSelectedStatementData(null);
+          }}
+          state={state}
+          documentType="statement"
+          statementData={selectedStatementData}
+          customTitle={isRtl ? `كشف حساب A4 - ${selectedStatementData.partyNameAr}` : `A4 Statement - ${selectedStatementData.partyNameEn || selectedStatementData.partyNameAr}`}
+        />
       )}
     </div>
   );

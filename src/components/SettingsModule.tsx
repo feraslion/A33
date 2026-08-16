@@ -18,7 +18,20 @@ import {
   Clock,
   History,
   HardDrive,
-  Activity
+  Activity,
+  Search,
+  Filter,
+  X,
+  Calendar,
+  User,
+  SlidersHorizontal,
+  FileText,
+  Eye,
+  Play,
+  ToggleLeft,
+  ToggleRight,
+  Trash2,
+  Layers2
 } from 'lucide-react';
 import { ERPState, logAuditEvent } from '../data/initialData';
 import { getTranslation, TranslationKey } from '../data/translations';
@@ -34,6 +47,13 @@ import {
   BackupRetentionConfig,
   applyBackupRetentionPolicy
 } from '../utils/backupService';
+import {
+  runBatchRecurringInvoices,
+  runBulkInventoryUpdate,
+  getNextTriggerDate,
+  BulkInventoryConfig
+} from '../utils/batchProcessing';
+import { RecurringInvoice, BatchJobLog } from '../types';
 
 interface SettingsModuleProps {
   state: ERPState;
@@ -45,7 +65,15 @@ export default function SettingsModule({ state, onChangeState }: SettingsModuleP
   const isRtl = lang === 'ar';
   const t = (key: TranslationKey) => getTranslation(lang, key);
 
-  const [activeSubTab, setActiveSubTab] = useState<'profile' | 'currencies' | 'branches' | 'security' | 'database'>('profile');
+  const [activeSubTab, setActiveSubTab] = useState<'profile' | 'currencies' | 'branches' | 'security' | 'database' | 'batch'>('profile');
+
+  // Audit Logs Filtering State
+  const [auditSearch, setAuditSearch] = useState('');
+  const [auditUserFilter, setAuditUserFilter] = useState('all');
+  const [auditCategoryFilter, setAuditCategoryFilter] = useState('all');
+  const [auditStartDate, setAuditStartDate] = useState('');
+  const [auditEndDate, setAuditEndDate] = useState('');
+  const [selectedAuditLog, setSelectedAuditLog] = useState<any | null>(null);
 
   // Backup System State
   const [s3Config, setS3Config] = useState<S3BackupConfig>(() => {
@@ -98,11 +126,180 @@ export default function SettingsModule({ state, onChangeState }: SettingsModuleP
     setLocalCacheFiles(raw ? JSON.parse(raw) : {});
   };
 
+  // Batch Processing Center state fields
+  const [showRecModal, setShowRecModal] = useState(false);
+  const [recTitle, setRecTitle] = useState('');
+  const [recType, setRecType] = useState<'sales' | 'purchase'>('sales');
+  const [recContactId, setRecContactId] = useState('');
+  const [recPaymentType, setRecPaymentType] = useState<'cash' | 'credit'>('credit');
+  const [recCurrency, setRecCurrency] = useState('SYP');
+  const [recFrequency, setRecFrequency] = useState<'daily' | 'weekly' | 'monthly' | 'yearly'>('monthly');
+  const [recNextTriggerDate, setRecNextTriggerDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [recLines, setRecLines] = useState<any[]>([{ itemId: '', quantity: 1, unitPrice: 0, discount: 0, taxRate: 5 }]);
+  const [recProcessingDate, setRecProcessingDate] = useState(() => new Date().toISOString().split('T')[0]);
+
+  // In-app Notification Toast
+  const [settingsToast, setSettingsToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    setSettingsToast({ message, type });
+    setTimeout(() => setSettingsToast(null), 5000);
+  };
+
+  // Bulk Inventory adjustment fields
+  const [bulkCategory, setBulkCategory] = useState('all');
+  const [bulkItemType, setBulkItemType] = useState<'all' | 'product' | 'service'>('all');
+  const [bulkActionType, setBulkActionType] = useState<'adjust_sell_price' | 'adjust_cost_price' | 'adjust_stock' | 'adjust_reorder_level'>('adjust_sell_price');
+  const [bulkAdjustmentType, setBulkAdjustmentType] = useState<'percentage' | 'flat' | 'set'>('percentage');
+  const [bulkAdjustmentValue, setBulkAdjustmentValue] = useState(0);
+  const [bulkWarehouseId, setBulkWarehouseId] = useState('wh_1');
+  const [bulkRounding, setBulkRounding] = useState<'none' | 'nearest' | 'decimals'>('decimals');
+
+  const handleTriggerRecurringInvoices = () => {
+    const result = runBatchRecurringInvoices(state, recProcessingDate);
+    onChangeState(() => result.updatedState);
+    if (result.processedInvoices.length > 0) {
+      const titles = result.processedInvoices.map(p => p.templateTitle).join(', ');
+      showToast(isRtl
+        ? `نجاح! تم إصدار عدد (${result.processedInvoices.length}) فواتير تلقائية متطابقة الأرصدة. القوالب المعالجة: ${titles}`
+        : `Success! Auto-generated (${result.processedInvoices.length}) balanced invoices. Templates: ${titles}`, 'success');
+    } else {
+      showToast(isRtl
+        ? `لم يحن موعد استحقاق أي قوالب فواتير دورية نشطة لتاريخ المعالجة المحدد (${recProcessingDate}).`
+        : `No active recurring invoice templates were due for the selected processing date (${recProcessingDate}).`, 'info');
+    }
+  };
+
+  const handleSaveRecurringTemplate = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!recTitle || !recContactId || recLines.some(l => !l.itemId || l.quantity <= 0)) {
+      showToast(isRtl ? 'يرجى إدخال الحقول الأساسية وتفاصيل السلع!' : 'Please enter all required fields and item quantities!', 'error');
+      return;
+    }
+
+    const newTemplate: RecurringInvoice = {
+      id: `rec_${Date.now()}`,
+      title: recTitle,
+      type: recType,
+      contactId: recContactId,
+      paymentType: recPaymentType,
+      currencyCode: recCurrency,
+      frequency: recFrequency,
+      lines: recLines.map(l => ({
+        itemId: l.itemId,
+        quantity: Number(l.quantity),
+        unitPrice: Number(l.unitPrice),
+        discount: Number(l.discount),
+        taxRate: Number(l.taxRate)
+      })),
+      isActive: true,
+      nextTriggerDate: recNextTriggerDate,
+      createdAt: new Date().toISOString()
+    };
+
+    onChangeState(prev => {
+      const updatedList = [...(prev.recurringInvoices || []), newTemplate];
+      return logAuditEvent(
+        { ...prev, recurringInvoices: updatedList },
+        'إنشاء قالب فاتورة دورية جديد',
+        'Registered New Recurring Template',
+        `تم تعريف قالب فاتورة دورية جديد [${recTitle}] بتردد [${recFrequency}]. الاستحقاق القادم: ${recNextTriggerDate}`,
+        `Successfully registered new recurring billing template [${recTitle}] with frequency [${recFrequency}]. Next run scheduled on ${recNextTriggerDate}.`
+      );
+    });
+
+    setShowRecModal(false);
+    setRecTitle('');
+    setRecContactId('');
+    setRecLines([{ itemId: '', quantity: 1, unitPrice: 0, discount: 0, taxRate: 5 }]);
+  };
+
+  const handleToggleRecurringTemplate = (id: string) => {
+    onChangeState(prev => {
+      const updatedList = (prev.recurringInvoices || []).map(r => {
+        if (r.id === id) {
+          const nextStatus = !r.isActive;
+          return { ...r, isActive: nextStatus };
+        }
+        return r;
+      });
+      const tpl = prev.recurringInvoices?.find(r => r.id === id);
+      const title = tpl ? tpl.title : id;
+      const act = tpl?.isActive ? 'تعطيل' : 'تنشيط';
+      const actEn = tpl?.isActive ? 'Disabled' : 'Enabled';
+      return logAuditEvent(
+        { ...prev, recurringInvoices: updatedList },
+        `${act} قالب الفاتورة الدورية`,
+        `${actEn} Recurring Billing Rule`,
+        `تم تعديل حالة قالب الفاتورة [${title}] بنجاح.`,
+        `Successfully toggled recurring template [${title}] to ${actEn}.`
+      );
+    });
+  };
+
+  const handleDeleteRecurringTemplate = (id: string) => {
+    if (confirm(isRtl ? 'هل أنت متأكد من حذف هذا القالب نهائياً؟' : 'Are you sure you want to permanently delete this template?')) {
+      onChangeState(prev => {
+        const updatedList = (prev.recurringInvoices || []).filter(r => r.id !== id);
+        return logAuditEvent(
+          { ...prev, recurringInvoices: updatedList },
+          'حذف قالب فاتورة دورية',
+          'Deleted Recurring Billing Template',
+          `تم مسح قالب الاستحقاق الدوري بنجاح.`,
+          `Successfully deleted recurring template reference from active registry.`
+        );
+      });
+    }
+  };
+
+  const handleTriggerBulkInventoryUpdate = () => {
+    const isPercentage = bulkAdjustmentType === 'percentage';
+    const msgAr = `هل أنت متأكد من رغبتك في تطبيق التعديل الجماعي؟ سيتم تعديل أسعار أو مخزون الأصناف المطابقة للخيارات فوراً ولا يمكن التراجع عن هذه العملية!`;
+    const msgEn = `Are you sure you want to run this bulk catalog operation? This will batch modify prices or stock levels for matching items and cannot be undone!`;
+
+    if (confirm(isRtl ? msgAr : msgEn)) {
+      const config: BulkInventoryConfig = {
+        actionType: bulkActionType,
+        categoryId: bulkCategory,
+        itemType: bulkItemType,
+        adjustmentType: bulkAdjustmentType,
+        adjustmentValue: Number(bulkAdjustmentValue),
+        warehouseId: bulkWarehouseId,
+        rounding: bulkRounding
+      };
+
+      const result = runBulkInventoryUpdate(state, config);
+      onChangeState(() => result.updatedState);
+      
+      showToast(isRtl
+        ? `نجاح! تم تحديث عدد (${result.updatedCount}) أصناف في الدليل وتأكيد التغييرات.`
+        : `Success! Modified (${result.updatedCount}) catalog items with the configured batch adjustments.`, 'success');
+    }
+  };
+
   const saveRetentionConfig = (cfg: BackupRetentionConfig) => {
     setRetentionConfig(cfg);
     localStorage.setItem('fatih_erp_backup_retention', JSON.stringify(cfg));
-    applyBackupRetentionPolicy(cfg);
+    const result = applyBackupRetentionPolicy(cfg);
     reloadLocalCacheFiles();
+
+    // Log the automatic retention policy action in the security audit logs!
+    if (result.deletedCount > 0) {
+      onChangeState(prev => logAuditEvent(
+        prev,
+        'تطبيق تلقائي لسياسة استبقاء النسخ الاحتياطية',
+        'Auto-Applied Backup Retention Policy',
+        `تم تعديل سياسة الاستبقاء وتطبيق تصفية تلقائية. تم حذف ${result.deletedCount} ملفات منتهية، المتبقي: ${result.remainingCount}`,
+        `Modified backup retention rule and performed auto-cleanup. Removed ${result.deletedCount} stale backup files, remaining in cache: ${result.remainingCount}`
+      ));
+    } else {
+      onChangeState(prev => logAuditEvent(
+        prev,
+        'تحديث سياسة استبقاء النسخ',
+        'Updated Backup Retention Rule',
+        `تحديث سياسة استبقاء النسخ الاحتياطية إلى [${cfg.type}: ${cfg.value}]. لم تُمحَ أي ملفات حالياً.`,
+        `Set local cache backup retention rule to [${cfg.type}: ${cfg.value}]. No files required immediate pruning.`
+      ));
+    }
   };
 
   const handleSaveRetentionConfig = (type: 'files' | 'days' | 'none', value: number) => {
@@ -113,9 +310,18 @@ export default function SettingsModule({ state, onChangeState }: SettingsModuleP
   const handleManualPruning = () => {
     const result = applyBackupRetentionPolicy(retentionConfig);
     reloadLocalCacheFiles();
-    alert(isRtl 
-      ? `تمت التصفية بنجاح! تم حذف ${result.deletedCount} ملفات منتهية الصلاحية من الذاكرة المحلية. المتبقي: ${result.remainingCount} ملفات.`
-      : `Cleanup completed! Deleted ${result.deletedCount} expired backup files. Remaining: ${result.remainingCount} files.`);
+
+    onChangeState(prev => logAuditEvent(
+      prev,
+      'تنظيف يدوي للنسخ الاحتياطية',
+      'Triggered Manual Backup Pruning',
+      `تنظيف يدوي للذاكرة المحلية لملفات الاحتياط. تم حذف ${result.deletedCount} ملفات، المتبقي: ${result.remainingCount}`,
+      `Executed manual cache pruning of local backups. Deleted ${result.deletedCount} stale cache entries, keeping ${result.remainingCount} active backups.`
+    ));
+
+    showToast(isRtl 
+      ? `تمت التصفية بنجاح! تم حذف ${result.deletedCount} ملفات منتهية من الذاكرة المحلية. المتبقي: ${result.remainingCount} ملفات.`
+      : `Cleanup completed! Deleted ${result.deletedCount} expired backup files. Remaining: ${result.remainingCount} files.`, 'info');
   };
 
   const handleDownloadCachedFile = (filename: string) => {
@@ -392,18 +598,79 @@ export default function SettingsModule({ state, onChangeState }: SettingsModuleP
     }
   };
 
+  const handleZeroOutTransactionsOnly = () => {
+    if (confirm(isRtl ? 'هل ترغب في تصفير وحذف جميع الحركات (الفواتير، السندات، قيود اليومية، وحركات نقطة البيع) وتصفير الأرصدة إلى الصفر؟' : 'Do you want to purge all transactions and zero out all account balances?')) {
+      onChangeState(prev => {
+        const zeroedAccounts = prev.accounts.map(a => ({ ...a, balance: 0 }));
+        const zeroedContacts = prev.contacts.map(c => ({ ...c, balance: 0 }));
+        const zeroedItems = prev.items.map(i => {
+          const zeroQty: Record<string, number> = {};
+          if (i.quantityInStock) {
+            Object.keys(i.quantityInStock).forEach(k => { zeroQty[k] = 0; });
+          }
+          return { ...i, quantityInStock: zeroQty };
+        });
+
+        const updated: ERPState = {
+          ...prev,
+          accounts: zeroedAccounts,
+          contacts: zeroedContacts,
+          items: zeroedItems,
+          invoices: [],
+          cashVouchers: [],
+          journalEntries: [],
+          posSessions: [],
+          posOrders: [],
+          syncQueue: [],
+          recurringInvoices: [],
+          auditLogs: [
+            {
+              id: `log_${Date.now()}`,
+              userId: 'usr_1',
+              username: 'admin',
+              actionAr: 'تصفير الحركات والأرصدة',
+              actionEn: 'Zeroed Transactions & Balances',
+              detailsAr: 'تم تصفير جميع العمليات والحركات والأرصدة بنجاح.',
+              detailsEn: 'Successfully cleared all transactions and reset balances to zero.',
+              ipAddress: '127.0.0.1',
+              timestamp: new Date().toISOString()
+            }
+          ]
+        };
+        return updated;
+      });
+      showToast(isRtl ? 'تم تصفير جميع الحركات والأرصدة بنجاح!' : 'All transactions cleared and balances zeroed!', 'success');
+    }
+  };
+
   const handleResetDatabase = () => {
-    if (confirm(isRtl ? 'هل أنت متأكد من رغبتك في تصفير النظام والعودة لبيانات التأسيس الافتراضية؟' : 'Are you sure you want to trigger database factory purge?')) {
+    if (confirm(isRtl ? 'هل أنت متأكد من رغبتك في تصفير النظام والعودة لبيئة العمل النظيفة والمصفرة بالكامل؟' : 'Are you sure you want to trigger database factory purge?')) {
       localStorage.clear();
       window.location.reload();
     }
   };
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-start">
-      
-      {/* Sidebar navigation sub-menu */}
-      <div className="md:col-span-3 bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-xl p-3 flex flex-col gap-1 shadow-xs">
+    <div className="space-y-4">
+      {settingsToast && (
+        <div className={`p-3.5 rounded-xl flex items-center justify-between text-xs font-bold transition-all shadow-md ${
+          settingsToast.type === 'success' ? 'bg-emerald-600 text-white' :
+          settingsToast.type === 'error' ? 'bg-rose-600 text-white' :
+          'bg-indigo-600 text-white'
+        }`}>
+          <div className="flex items-center gap-2">
+            {settingsToast.type === 'success' ? <CheckCircle className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
+            <span>{settingsToast.message}</span>
+          </div>
+          <button onClick={() => setSettingsToast(null)} className="text-white/80 hover:text-white cursor-pointer">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-start">
+        {/* Sidebar navigation sub-menu */}
+        <div className="md:col-span-3 bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-xl p-3 flex flex-col gap-1 shadow-xs">
         <button
           onClick={() => setActiveSubTab('profile')}
           className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg cursor-pointer transition-all ${
@@ -462,6 +729,18 @@ export default function SettingsModule({ state, onChangeState }: SettingsModuleP
         >
           <RefreshCw className="w-4 h-4 text-rose-500" />
           {isRtl ? 'قاعدة البيانات الموزعة' : 'Database Backups'}
+        </button>
+
+        <button
+          onClick={() => setActiveSubTab('batch')}
+          className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg cursor-pointer transition-all ${
+            activeSubTab === 'batch'
+              ? 'bg-indigo-50 dark:bg-indigo-950/20 text-indigo-600 dark:text-indigo-400 font-extrabold'
+              : 'text-gray-500 hover:text-gray-800'
+          }`}
+        >
+          <Layers2 className="w-4 h-4 text-purple-500" />
+          {isRtl ? 'مركز المعالجة الدفئية' : 'Batch Processing Center'}
         </button>
       </div>
 
@@ -673,45 +952,417 @@ export default function SettingsModule({ state, onChangeState }: SettingsModuleP
         )}
 
         {/* SECURITY AUDIT LOG */}
-        {activeSubTab === 'security' && (
-          <div className="space-y-6">
-            <h3 className="text-sm font-bold border-b border-gray-100 dark:border-gray-800 pb-3 text-gray-900 dark:text-white flex items-center justify-between">
-              <span>سجل تدقيق الأمان والعمليات - Enterprise Audit Trails</span>
-              <span className="text-[10px] bg-red-50 dark:bg-red-950/20 text-red-600 px-2 py-0.5 rounded-md font-bold uppercase">
-                immutable logs (مؤمن)
-              </span>
-            </h3>
+        {activeSubTab === 'security' && (() => {
+          const uniqueUsers = Array.from(new Set(state.auditLogs.map(log => log.username)));
 
-            <div className="overflow-hidden border border-gray-100 dark:border-gray-800 rounded-xl shadow-xs">
-              <div className="overflow-y-auto max-h-[400px]">
-                <table className="w-full text-left border-collapse text-xs">
-                  <thead>
-                    <tr className="bg-gray-50 dark:bg-gray-800/50 text-gray-400 font-bold uppercase border-b border-gray-100 dark:border-gray-800">
-                      <th className="p-4">{isRtl ? 'التاريخ والوقت' : 'Timestamp'}</th>
-                      <th className="p-4">{isRtl ? 'العملية والمجال' : 'Event Action'}</th>
-                      <th className="p-4">{isRtl ? 'التفاصيل والوصف الآمن' : 'Secured Details'}</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100 dark:divide-gray-800 font-medium">
-                    {state.auditLogs.map(log => (
-                      <tr key={log.id} className="hover:bg-gray-50/50 dark:hover:bg-gray-800/10">
-                        <td className="p-4 font-mono text-[10px] text-gray-400 whitespace-nowrap">
-                          {new Date(log.timestamp).toLocaleString()}
-                        </td>
-                        <td className="p-4">
-                          <span className="font-bold text-indigo-600 block text-[11px]">{isRtl ? log.actionAr : log.actionEn}</span>
-                        </td>
-                        <td className="p-4 text-xs text-gray-600 dark:text-gray-300">
-                          {isRtl ? log.detailsAr : log.detailsEn}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+          const getEventCategory = (log: any) => {
+            const en = log.actionEn.toLowerCase();
+            if (en.includes('login') || en.includes('logged in')) return 'auth';
+            if (en.includes('backup') || en.includes('retention') || en.includes('prun') || en.includes('clean')) return 'backup';
+            if (en.includes('invoice') || en.includes('sale') || en.includes('purchase')) return 'invoice';
+            if (en.includes('voucher') || en.includes('cash') || en.includes('receipt') || en.includes('payment')) return 'finance';
+            if (en.includes('settings') || en.includes('branch') || en.includes('currency') || en.includes('rate')) return 'settings';
+            return 'system';
+          };
+
+          const getCategoryBadge = (category: string) => {
+            switch (category) {
+              case 'auth':
+                return {
+                  label: isRtl ? 'أمان وتسجيل دخول' : 'Security & Login',
+                  classes: 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400 border-blue-100 dark:border-blue-900/30'
+                };
+              case 'backup':
+                return {
+                  label: isRtl ? 'قواعد بيانات ونسخ احتياطي' : 'Database & Backup',
+                  classes: 'bg-purple-50 text-purple-700 dark:bg-purple-950/30 dark:text-purple-400 border-purple-100 dark:border-purple-900/30'
+                };
+              case 'invoice':
+                return {
+                  label: isRtl ? 'المبيعات والمشتريات' : 'Sales & Sourcing',
+                  classes: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400 border-emerald-100 dark:border-emerald-900/30'
+                };
+              case 'finance':
+                return {
+                  label: isRtl ? 'المالية والخزينة' : 'Finance & Vault',
+                  classes: 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400 border-amber-100 dark:border-amber-900/30'
+                };
+              case 'settings':
+                return {
+                  label: isRtl ? 'إعدادات النظام' : 'System Settings',
+                  classes: 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-400 border-indigo-100 dark:border-indigo-900/30'
+                };
+              default:
+                return {
+                  label: isRtl ? 'عمليات عامة' : 'General System',
+                  classes: 'bg-gray-50 text-gray-700 dark:bg-gray-800/50 dark:text-gray-400 border-gray-100 dark:border-gray-800'
+                };
+            }
+          };
+
+          const filteredLogs = state.auditLogs.filter(log => {
+            const searchLower = auditSearch.toLowerCase();
+            const matchesSearch = !auditSearch || 
+              log.actionEn.toLowerCase().includes(searchLower) ||
+              log.actionAr.toLowerCase().includes(searchLower) ||
+              log.detailsEn.toLowerCase().includes(searchLower) ||
+              log.detailsAr.toLowerCase().includes(searchLower) ||
+              log.username.toLowerCase().includes(searchLower) ||
+              log.ipAddress.toLowerCase().includes(searchLower);
+
+            const matchesUser = auditUserFilter === 'all' || log.username === auditUserFilter;
+            const matchesCategory = auditCategoryFilter === 'all' || getEventCategory(log) === auditCategoryFilter;
+
+            const logDate = new Date(log.timestamp);
+            let matchesStartDate = true;
+            if (auditStartDate) {
+              const start = new Date(auditStartDate);
+              start.setHours(0, 0, 0, 0);
+              matchesStartDate = logDate >= start;
+            }
+            let matchesEndDate = true;
+            if (auditEndDate) {
+              const end = new Date(auditEndDate);
+              end.setHours(23, 59, 59, 999);
+              matchesEndDate = logDate <= end;
+            }
+
+            return matchesSearch && matchesUser && matchesCategory && matchesStartDate && matchesEndDate;
+          });
+
+          const handleExportFilteredLogs = () => {
+            try {
+              const dataStr = JSON.stringify(filteredLogs, null, 2);
+              const blob = new Blob([dataStr], { type: 'application/json' });
+              const url = URL.createObjectURL(blob);
+              const link = document.createElement('a');
+              link.href = url;
+              link.download = `fatih_erp_audit_report_${new Date().toISOString().slice(0,10)}.json`;
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+              URL.revokeObjectURL(url);
+            } catch (e) {
+              console.error('Failed to export audit report:', e);
+            }
+          };
+
+          // Stats calculation
+          const totalCount = state.auditLogs.length;
+          const authCount = state.auditLogs.filter(l => getEventCategory(l) === 'auth').length;
+          const backupCount = state.auditLogs.filter(l => getEventCategory(l) === 'backup').length;
+          const criticalFailuresCount = state.auditLogs.filter(l => {
+            const en = l.detailsEn.toLowerCase() + l.actionEn.toLowerCase();
+            const ar = l.detailsAr.toLowerCase() + l.actionAr.toLowerCase();
+            return en.includes('fail') || en.includes('error') || ar.includes('فشل') || ar.includes('خطأ');
+          }).length;
+
+          const isFilterActive = auditSearch !== '' || auditUserFilter !== 'all' || auditCategoryFilter !== 'all' || auditStartDate !== '' || auditEndDate !== '';
+
+          const clearAllFilters = () => {
+            setAuditSearch('');
+            setAuditUserFilter('all');
+            setAuditCategoryFilter('all');
+            setAuditStartDate('');
+            setAuditEndDate('');
+          };
+
+          return (
+            <div className="space-y-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-gray-100 dark:border-gray-800 pb-3 gap-3">
+                <div className="flex items-center gap-2">
+                  <Activity className="w-5 h-5 text-indigo-500 animate-pulse" />
+                  <h3 className="text-sm font-extrabold text-gray-900 dark:text-white">
+                    {isRtl ? 'سجل تدقيق الأمان والعمليات المتقدم' : 'Enterprise Audit Trails & Activity Logs'}
+                  </h3>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] bg-indigo-50 dark:bg-indigo-950/20 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-900/30 px-2.5 py-0.5 rounded-md font-bold uppercase tracking-wider">
+                    {isRtl ? 'مشفر ومرجعي' : 'Immutable Registry'}
+                  </span>
+                </div>
               </div>
+
+              {/* Stats Overview Grid */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="bg-gray-50 dark:bg-gray-950 border border-gray-100 dark:border-gray-850 p-4 rounded-xl">
+                  <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">
+                    {isRtl ? 'إجمالي الحركات المسجلة' : 'Total System Events'}
+                  </p>
+                  <p className="text-xl font-extrabold text-gray-900 dark:text-white mt-1 font-mono">{totalCount}</p>
+                </div>
+                <div className="bg-blue-50/25 dark:bg-blue-950/5 border border-blue-100/50 dark:border-blue-900/15 p-4 rounded-xl">
+                  <p className="text-[10px] text-blue-500 dark:text-blue-400 font-bold uppercase tracking-wider">
+                    {isRtl ? 'حركات الدخول والأمان' : 'Security Logins'}
+                  </p>
+                  <p className="text-xl font-extrabold text-blue-600 dark:text-blue-400 mt-1 font-mono">{authCount}</p>
+                </div>
+                <div className="bg-purple-50/25 dark:bg-purple-950/5 border border-purple-100/50 dark:border-purple-900/15 p-4 rounded-xl">
+                  <p className="text-[10px] text-purple-500 dark:text-purple-400 font-bold uppercase tracking-wider">
+                    {isRtl ? 'عمليات قواعد البيانات' : 'DB & Backup Tasks'}
+                  </p>
+                  <p className="text-xl font-extrabold text-purple-600 dark:text-purple-400 mt-1 font-mono">{backupCount}</p>
+                </div>
+                <div className={`p-4 rounded-xl border ${
+                  criticalFailuresCount > 0 
+                    ? 'bg-red-50/25 dark:bg-red-950/5 border-red-100/50 dark:border-red-900/15' 
+                    : 'bg-gray-50 dark:bg-gray-950 border-gray-100 dark:border-gray-850'
+                }`}>
+                  <p className={`text-[10px] font-bold uppercase tracking-wider ${criticalFailuresCount > 0 ? 'text-red-500' : 'text-gray-400'}`}>
+                    {isRtl ? 'إخفاقات أو تنبيهات' : 'Critical Failures'}
+                  </p>
+                  <p className={`text-xl font-extrabold mt-1 font-mono ${criticalFailuresCount > 0 ? 'text-red-500' : 'text-gray-900 dark:text-white'}`}>{criticalFailuresCount}</p>
+                </div>
+              </div>
+
+              {/* Filtering Dashboard Controls */}
+              <div className="bg-gray-50/50 dark:bg-gray-950/40 border border-gray-100 dark:border-gray-800 p-4 rounded-xl space-y-3.5">
+                <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-800 pb-2">
+                  <span className="text-xs font-bold text-gray-700 dark:text-gray-300 flex items-center gap-1.5">
+                    <SlidersHorizontal className="w-4 h-4 text-indigo-500" />
+                    {isRtl ? 'أدوات فلترة وفرز السجلات المتقدمة' : 'Advanced Audit Logs Filtering Engine'}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    {isFilterActive && (
+                      <button
+                        type="button"
+                        onClick={clearAllFilters}
+                        className="text-[10px] font-bold text-red-500 hover:text-red-600 flex items-center gap-0.5 px-2 py-0.5 rounded bg-red-50 dark:bg-red-950/20 cursor-pointer"
+                      >
+                        <X className="w-3 h-3" />
+                        {isRtl ? 'إعادة تعيين' : 'Reset'}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleExportFilteredLogs}
+                      className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 flex items-center gap-1 px-2.5 py-1 rounded bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 shadow-2xs cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      {isRtl ? 'تصدير التقرير' : 'Export Logs'}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+                  {/* Search input */}
+                  <div className="relative">
+                    <Search className="absolute top-2.5 left-3 w-4 h-4 text-gray-400" />
+                    <input
+                      type="text"
+                      value={auditSearch}
+                      onChange={e => setAuditSearch(e.target.value)}
+                      placeholder={isRtl ? 'البحث بالعملية، الوصف، المستخدم...' : 'Search event, description...'}
+                      className="w-full pl-9 pr-3 py-1.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg text-xs outline-hidden focus:border-indigo-500 text-gray-800 dark:text-gray-200"
+                    />
+                  </div>
+
+                  {/* Category Dropdown */}
+                  <div>
+                    <select
+                      value={auditCategoryFilter}
+                      onChange={e => setAuditCategoryFilter(e.target.value)}
+                      className="w-full px-3 py-1.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg text-xs outline-hidden text-gray-800 dark:text-gray-200"
+                    >
+                      <option value="all">{isRtl ? 'جميع التصنيفات' : 'All Categories'}</option>
+                      <option value="auth">{isRtl ? 'أمان وتسجيل دخول' : 'Security & Login'}</option>
+                      <option value="backup">{isRtl ? 'قواعد بيانات ونسخ احتياطي' : 'Database & Backup'}</option>
+                      <option value="invoice">{isRtl ? 'المبيعات والمشتريات' : 'Sales & Sourcing'}</option>
+                      <option value="finance">{isRtl ? 'المالية والخزينة' : 'Finance & Vault'}</option>
+                      <option value="settings">{isRtl ? 'إعدادات النظام' : 'System Settings'}</option>
+                    </select>
+                  </div>
+
+                  {/* User Dropdown */}
+                  <div>
+                    <select
+                      value={auditUserFilter}
+                      onChange={e => setAuditUserFilter(e.target.value)}
+                      className="w-full px-3 py-1.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg text-xs outline-hidden text-gray-800 dark:text-gray-200"
+                    >
+                      <option value="all">{isRtl ? 'جميع المستخدمين' : 'All Users'}</option>
+                      {uniqueUsers.map(u => (
+                        <option key={u} value={u}>@{u}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Start Date */}
+                  <div className="relative">
+                    <input
+                      type="date"
+                      value={auditStartDate}
+                      onChange={e => setAuditStartDate(e.target.value)}
+                      className="w-full px-3 py-1.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg text-xs outline-hidden text-gray-800 dark:text-gray-200"
+                      title={isRtl ? 'تاريخ البداية' : 'Start Date'}
+                    />
+                  </div>
+
+                  {/* End Date */}
+                  <div className="relative">
+                    <input
+                      type="date"
+                      value={auditEndDate}
+                      onChange={e => setAuditEndDate(e.target.value)}
+                      className="w-full px-3 py-1.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg text-xs outline-hidden text-gray-800 dark:text-gray-200"
+                      title={isRtl ? 'تاريخ النهاية' : 'End Date'}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Results Table */}
+              <div className="overflow-hidden border border-gray-150 dark:border-gray-800 rounded-xl shadow-xs">
+                <div className="overflow-x-auto max-h-[500px]">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-gray-50 dark:bg-gray-800/60 text-gray-400 font-bold uppercase border-b border-gray-150 dark:border-gray-800 text-left rtl:text-right">
+                        <th className="p-4">{isRtl ? 'التاريخ والوقت' : 'Timestamp'}</th>
+                        <th className="p-4">{isRtl ? 'نوع العملية' : 'Category'}</th>
+                        <th className="p-4">{isRtl ? 'المجال والحدث' : 'Event / Action'}</th>
+                        <th className="p-4">{isRtl ? 'التفاصيل المشفرة' : 'Details'}</th>
+                        <th className="p-4">{isRtl ? 'المستخدم' : 'Operator'}</th>
+                        <th className="p-4 text-right rtl:text-left"></th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100 dark:divide-gray-800 font-medium">
+                      {filteredLogs.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="p-12 text-center text-gray-400">
+                            <SlidersHorizontal className="w-10 h-10 mx-auto text-gray-300 mb-2 animate-bounce" />
+                            <p className="font-bold">{isRtl ? 'لا توجد سجلات تطابق الفلتر المدخل.' : 'No audit records matched your current filters.'}</p>
+                            <p className="text-[11px] text-gray-400 mt-1">{isRtl ? 'يرجى تجربة معايير بحث أخرى أو إعادة التعيين.' : 'Try widening your query limits or resetting selection.'}</p>
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredLogs.map(log => {
+                          const cat = getEventCategory(log);
+                          const badge = getCategoryBadge(cat);
+                          const isFailed = (log.detailsEn + log.actionEn + log.detailsAr + log.actionAr).toLowerCase().includes('fail') || 
+                                           (log.detailsEn + log.actionEn + log.detailsAr + log.actionAr).toLowerCase().includes('error') ||
+                                           (log.detailsEn + log.actionEn + log.detailsAr + log.actionAr).includes('فشل') ||
+                                           (log.detailsEn + log.actionEn + log.detailsAr + log.actionAr).includes('خطأ');
+
+                          return (
+                            <tr key={log.id} className="hover:bg-gray-50/50 dark:hover:bg-gray-800/10 transition-colors">
+                              <td className="p-4 font-mono text-[10px] text-gray-400 whitespace-nowrap">
+                                {new Date(log.timestamp).toLocaleString()}
+                              </td>
+                              <td className="p-4 whitespace-nowrap">
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${badge.classes}`}>
+                                  {badge.label}
+                                </span>
+                              </td>
+                              <td className="p-4 min-w-[150px]">
+                                <div className="flex items-center gap-1.5">
+                                  <span className={`w-1.5 h-1.5 rounded-full ${isFailed ? 'bg-red-500 animate-ping' : 'bg-emerald-500'}`} />
+                                  <span className="font-bold text-gray-900 dark:text-gray-100 text-[11.5px] block">
+                                    {isRtl ? log.actionAr : log.actionEn}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="p-4 max-w-xs truncate text-gray-500 dark:text-gray-400">
+                                {isRtl ? log.detailsAr : log.detailsEn}
+                              </td>
+                              <td className="p-4 whitespace-nowrap font-semibold text-gray-600 dark:text-gray-300">
+                                <span className="bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded-md text-[10px] font-mono text-gray-500 dark:text-gray-400">
+                                  @{log.username}
+                                </span>
+                              </td>
+                              <td className="p-4 text-right rtl:text-left whitespace-nowrap">
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedAuditLog(log)}
+                                  className="p-1 text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg cursor-pointer transition-colors"
+                                  title={isRtl ? 'تفاصيل السجل' : 'View Log Details'}
+                                >
+                                  <Eye className="w-4 h-4" />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Log Details Modal Overlay */}
+              {selectedAuditLog && (
+                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-xs">
+                  <div className="bg-white dark:bg-gray-950 border border-gray-150 dark:border-gray-800 rounded-2xl w-full max-w-lg shadow-xl overflow-hidden animate-fade-in">
+                    <div className="flex items-center justify-between p-4 border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50">
+                      <div className="flex items-center gap-2">
+                        <FileText className="w-4.5 h-4.5 text-indigo-500" />
+                        <span className="font-extrabold text-xs uppercase tracking-wider text-gray-700 dark:text-gray-300">
+                          {isRtl ? 'تفاصيل سجل الأمان الرقمي' : 'Digital Security Log Details'}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedAuditLog(null)}
+                        className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-xs font-bold cursor-pointer"
+                      >
+                        ✕
+                      </button>
+                    </div>
+
+                    <div className="p-5 space-y-4 text-xs text-left rtl:text-right" style={{ direction: isRtl ? 'rtl' : 'ltr' }}>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wide">{isRtl ? 'مُعرّف السجل الفريد' : 'Log UUID'}</p>
+                          <p className="font-mono text-gray-700 dark:text-gray-300 mt-0.5 font-bold">{selectedAuditLog.id}</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wide">{isRtl ? 'التاريخ والوقت الكامل' : 'Exact Timestamp'}</p>
+                          <p className="font-mono text-gray-750 dark:text-gray-300 mt-0.5">{new Date(selectedAuditLog.timestamp).toISOString()}</p>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-4 border-t border-gray-50 dark:border-gray-900 pt-3">
+                        <div>
+                          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wide">{isRtl ? 'المشغل والمسؤول' : 'Authorized Operator'}</p>
+                          <p className="font-semibold text-gray-700 dark:text-gray-300 mt-0.5">@{selectedAuditLog.username} (ID: {selectedAuditLog.userId})</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wide">{isRtl ? 'عنوان IP للجهاز' : 'Diagnostic Host IP'}</p>
+                          <p className="font-mono text-gray-750 dark:text-gray-300 mt-0.5">{selectedAuditLog.ipAddress}</p>
+                        </div>
+                      </div>
+
+                      <div className="border-t border-gray-50 dark:border-gray-900 pt-3 space-y-1">
+                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wide">{isRtl ? 'الحدث الرئيسي والمهمة' : 'Main Event Action'}</p>
+                        <div className="p-2.5 bg-gray-50 dark:bg-gray-900 rounded-lg">
+                          <p className="font-bold text-indigo-600 block">{selectedAuditLog.actionEn}</p>
+                          <p className="font-bold text-indigo-600 block mt-0.5 rtl:text-right">{selectedAuditLog.actionAr}</p>
+                        </div>
+                      </div>
+
+                      <div className="border-t border-gray-50 dark:border-gray-900 pt-3 space-y-1">
+                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wide">{isRtl ? 'الوصف والتفاصيل الأمنية' : 'Immutable Event Details'}</p>
+                        <div className="p-3 bg-gray-50 dark:bg-gray-900 rounded-lg text-gray-700 dark:text-gray-300 leading-relaxed font-semibold">
+                          <p className="block">{selectedAuditLog.detailsEn}</p>
+                          <p className="block mt-1 rtl:text-right">{selectedAuditLog.detailsAr}</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="p-3 border-t border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/30 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedAuditLog(null)}
+                        className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg cursor-pointer text-xs"
+                      >
+                        {isRtl ? 'إغلاق النافذة' : 'Close Audit View'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* DATABASE BACKUP AND RECOVERY */}
         {activeSubTab === 'database' && (() => {
@@ -1344,25 +1995,648 @@ export default function SettingsModule({ state, onChangeState }: SettingsModuleP
                 </div>
               </div>
 
-              {/* Factory Purge / Hard Reset Area */}
-              <div className="p-4 bg-rose-50/20 dark:bg-rose-950/10 border border-rose-100 dark:border-rose-950/30 rounded-xl flex items-center justify-between">
-                <div>
-                  <h5 className="font-extrabold text-rose-700 dark:text-rose-400">{isRtl ? 'تنبيه: تصفير النظام الصلب' : 'Danger Area: System Factory Purge'}</h5>
-                  <p className="text-gray-400 text-[10px] mt-0.5">{isRtl ? 'سيقوم هذا الخيار بمسح كامل البيانات المحلية وإعادتها لحالة المصنع الافتراضية.' : 'Purges all LocalStorage tables immediately, restoring system data fields back to default demo seeds.'}</p>
+              {/* Reset & Zeroing Area */}
+              <div className="space-y-3">
+                <div className="p-4 bg-amber-50/30 dark:bg-amber-950/10 border border-amber-200 dark:border-amber-900/30 rounded-xl flex items-center justify-between">
+                  <div>
+                    <h5 className="font-extrabold text-amber-800 dark:text-amber-400">{isRtl ? 'تصفير الحركات والعمليات والأرصدة' : 'Zero Out Transactions & Balances'}</h5>
+                    <p className="text-gray-500 dark:text-gray-400 text-[11px] mt-0.5">
+                      {isRtl ? 'حذف كافة الفواتير، السندات، القيود المحاسبية، الكميات المخزنية، وأرصدة العملاء/الموردين وجعلها صفراً مع الحفاظ على الحسابات والشركات.' : 'Purges all invoices, vouchers, ledger journals, stock quantities, and resets balances to 0.'}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleZeroOutTransactionsOnly}
+                    className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-lg cursor-pointer transition-colors whitespace-nowrap"
+                  >
+                    {isRtl ? 'تصفير جميع الحركات' : 'Zero All Transactions'}
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleResetDatabase}
-                  className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white font-extrabold rounded-lg cursor-pointer transition-colors"
-                >
-                  {isRtl ? 'تصفير النظام بالكامل' : 'Factory Reset'}
-                </button>
+
+                <div className="p-4 bg-rose-50/20 dark:bg-rose-950/10 border border-rose-100 dark:border-rose-950/30 rounded-xl flex items-center justify-between">
+                  <div>
+                    <h5 className="font-extrabold text-rose-700 dark:text-rose-400">{isRtl ? 'تصفير وإعادة تعيين النظام بالكامل' : 'Danger Area: Full Clean Factory Reset'}</h5>
+                    <p className="text-gray-400 text-[10px] mt-0.5">{isRtl ? 'سيقوم هذا الخيار بمسح كامل الذاكرة والبدء ببيئة عمل نقية ومصفرة بالكامل.' : 'Purges all LocalStorage tables immediately and reboots with a clean, zeroed state.'}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleResetDatabase}
+                    className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white font-extrabold rounded-lg cursor-pointer transition-colors whitespace-nowrap"
+                  >
+                    {isRtl ? 'تصفير النظام بالكامل' : 'Factory Reset'}
+                  </button>
+                </div>
               </div>
             </div>
           );
         })()}
 
+        {activeSubTab === 'batch' && (() => {
+          const recInvoicesList = state.recurringInvoices || [];
+          const batchLogsList = state.batchLogs || [];
+          
+          return (
+            <div className="space-y-6">
+              
+              {/* Header Info */}
+              <div className="border-b border-gray-100 dark:border-gray-800 pb-4">
+                <h3 className="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                  <Layers2 className="w-5 h-5 text-purple-500" />
+                  {isRtl ? 'مركز العمليات الدفئية والتكرارية' : 'Batch Processing & Recurring Retainers'}
+                </h3>
+                <p className="text-gray-500 text-xs mt-1">
+                  {isRtl
+                    ? 'أتمتة الفواتير الدورية المتكررة للعملاء والموردين، وإجراء التعديلات المخزنية الجماعية بضغطة زر محاسبية واحدة.'
+                    : 'Automate periodic customer retainers/billing and perform swift bulk changes across your inventory catalog.'}
+                </p>
+              </div>
+
+              {/* TWO COLUMN GRID FOR ACTIONS */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                
+                {/* 1. RECURRING BILLING MANAGEMENT & SIMULATOR */}
+                <div className="p-5 border border-purple-100 dark:border-purple-950/30 rounded-2xl bg-white dark:bg-gray-950/40 space-y-4">
+                  <div className="flex justify-between items-center">
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-purple-600 dark:text-purple-400 flex items-center gap-2">
+                      <Clock className="w-4 h-4" />
+                      {isRtl ? 'مشغل الفواتير والاشتراكات الدورية' : 'Recurring Vouchers & Retainers'}
+                    </h4>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRecTitle('');
+                        setRecContactId('');
+                        setRecLines([{ itemId: '', quantity: 1, unitPrice: 0, discount: 0, taxRate: 5 }]);
+                        setShowRecModal(true);
+                      }}
+                      className="px-2.5 py-1 text-[11px] bg-purple-50 hover:bg-purple-100 dark:bg-purple-950/30 dark:hover:bg-purple-950/50 text-purple-600 dark:text-purple-400 font-extrabold rounded-lg transition-all flex items-center gap-1 cursor-pointer"
+                    >
+                      <PlusCircle className="w-3.5 h-3.5" />
+                      {isRtl ? 'تعريف اشتراك دوري جديد' : 'New Recurrence Rule'}
+                    </button>
+                  </div>
+
+                  {/* Simulator Control Block */}
+                  <div className="p-3 bg-purple-50/30 dark:bg-purple-950/10 border border-purple-100/50 dark:border-purple-950/20 rounded-xl space-y-3">
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                      <div>
+                        <h5 className="text-[11px] font-black text-gray-700 dark:text-gray-300">
+                          {isRtl ? 'محاكي المعالجة التلقائية' : 'Batch Scheduler Trigger'}
+                        </h5>
+                        <p className="text-[10px] text-gray-400">
+                          {isRtl 
+                            ? 'حدد تاريخ التشغيل المطلوب لمحاكاة أو ترحيل الفواتير المجدولة تلقائياً.' 
+                            : 'Choose execution date to simulate/bill due recurring retainers.'}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="date"
+                          value={recProcessingDate}
+                          onChange={(e) => setRecProcessingDate(e.target.value)}
+                          className="px-2.5 py-1 text-xs bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg outline-hidden font-mono"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleTriggerRecurringInvoices}
+                          className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white font-extrabold text-xs rounded-lg cursor-pointer transition-colors flex items-center gap-1 shadow-sm shadow-purple-500/10"
+                        >
+                          <Play className="w-3 h-3 fill-white" />
+                          {isRtl ? 'تشغيل المعالجة المجدولة' : 'Run Batch Job'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Recurring list */}
+                  <div className="space-y-2 max-h-[280px] overflow-y-auto pr-1">
+                    {recInvoicesList.length === 0 ? (
+                      <p className="text-center text-gray-400 py-6 text-xs font-bold">
+                        {isRtl ? 'لا يوجد أي قواعد فوترة دورية حتى الآن.' : 'No recurring billing rules defined.'}
+                      </p>
+                    ) : (
+                      recInvoicesList.map(rule => {
+                        const contact = state.contacts.find(c => c.id === rule.contactId);
+                        const contactName = contact ? (isRtl ? contact.nameAr : contact.nameEn) : 'Unknown';
+                        const isOverdue = new Date(rule.nextTriggerDate) <= new Date(recProcessingDate);
+
+                        return (
+                          <div key={rule.id} className="p-3 border border-gray-100 dark:border-gray-800/80 rounded-xl bg-gray-50/50 dark:bg-gray-900/10 hover:border-purple-100 dark:hover:border-purple-950/40 transition-all flex items-center justify-between gap-3">
+                            <div className="space-y-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${
+                                  rule.type === 'sales'
+                                    ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400'
+                                    : 'bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400'
+                                }`}>
+                                  {rule.type === 'sales' ? (isRtl ? 'مبيعات' : 'SALES') : (isRtl ? 'مشتريات' : 'PURCHASE')}
+                                </span>
+                                <h6 className="font-extrabold text-xs text-gray-800 dark:text-gray-200 truncate" title={rule.title}>
+                                  {rule.title}
+                                </h6>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-gray-400 font-semibold">
+                                <span className="text-gray-600 dark:text-gray-400 font-bold">{contactName}</span>
+                                <span>•</span>
+                                <span className="bg-purple-50/60 dark:bg-purple-950/10 px-1 py-0.2 rounded text-purple-600 dark:text-purple-400">
+                                  {isRtl ? `تكرار: ${rule.frequency === 'monthly' ? 'شهري' : rule.frequency === 'weekly' ? 'أسبوعي' : rule.frequency === 'daily' ? 'يومي' : 'سنوي'}` : `Interval: ${rule.frequency}`}
+                                </span>
+                                <span>•</span>
+                                <span className={isOverdue ? 'text-purple-600 dark:text-purple-400 font-black underline' : ''}>
+                                  {isRtl ? `الاستحقاق: ${rule.nextTriggerDate}` : `Next due: ${rule.nextTriggerDate}`}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => handleToggleRecurringTemplate(rule.id)}
+                                title={rule.isActive ? (isRtl ? 'تعطيل مؤقت' : 'Pause Rule') : (isRtl ? 'تنشيط' : 'Activate Rule')}
+                                className="text-gray-400 hover:text-purple-500 transition-colors cursor-pointer"
+                              >
+                                {rule.isActive ? (
+                                  <ToggleRight className="w-5 h-5 text-purple-600" />
+                                ) : (
+                                  <ToggleLeft className="w-5 h-5 text-gray-400" />
+                                )}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteRecurringTemplate(rule.id)}
+                                className="text-gray-400 hover:text-red-500 transition-colors cursor-pointer"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+
+                {/* 2. BULK CATALOG ACTIONS */}
+                <div className="p-5 border border-indigo-100 dark:border-indigo-950/30 rounded-2xl bg-white dark:bg-gray-950/40 space-y-4">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 flex items-center gap-2">
+                    <Database className="w-4 h-4" />
+                    {isRtl ? 'المعالجات الجماعية للمخزون والأسعار' : 'Bulk Inventory & Price Tuning'}
+                  </h4>
+
+                  <div className="grid grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <label className="block text-[11px] text-gray-400 font-bold mb-1">{isRtl ? 'فئة الصنف' : 'Filter Category'}</label>
+                      <select
+                        value={bulkCategory}
+                        onChange={(e) => setBulkCategory(e.target.value)}
+                        className="w-full px-2.5 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg outline-hidden font-semibold"
+                      >
+                        <option value="all">{isRtl ? 'جميع الفئات والمسارات' : 'All Categories'}</option>
+                        {state.categories.map(c => (
+                          <option key={c.id} value={c.id}>{isRtl ? c.nameAr : c.nameEn}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] text-gray-400 font-bold mb-1">{isRtl ? 'نوع الصنف' : 'Catalog Type'}</label>
+                      <select
+                        value={bulkItemType}
+                        onChange={(e) => setBulkItemType(e.target.value as any)}
+                        className="w-full px-2.5 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg outline-hidden font-semibold"
+                      >
+                        <option value="all">{isRtl ? 'منتجات وخدمات' : 'All Items'}</option>
+                        <option value="product">{isRtl ? 'منتجات فقط (ذات رصيد)' : 'Products Only'}</option>
+                        <option value="service">{isRtl ? 'خدمات فقط' : 'Services Only'}</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <label className="block text-[11px] text-gray-400 font-bold mb-1">{isRtl ? 'الحقل المستهدف بالتعديل' : 'Target Property'}</label>
+                      <select
+                        value={bulkActionType}
+                        onChange={(e) => setBulkActionType(e.target.value as any)}
+                        className="w-full px-2.5 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg outline-hidden font-semibold text-indigo-600 dark:text-indigo-400"
+                      >
+                        <option value="adjust_sell_price">{isRtl ? 'تعديل أسعار المبيع' : 'Selling Price'}</option>
+                        <option value="adjust_cost_price">{isRtl ? 'تعديل أسعار التكلفة الشراء' : 'Cost Price'}</option>
+                        <option value="adjust_stock">{isRtl ? 'تعديل الرصيد المخزني (+/-)' : 'Warehouse Stock'}</option>
+                        <option value="adjust_reorder_level">{isRtl ? 'تعديل حد إعادة الطلب' : 'Reorder Levels'}</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] text-gray-400 font-bold mb-1">{isRtl ? 'طريقة الاحتساب والخصم' : 'Adjustment Formula'}</label>
+                      <select
+                        value={bulkAdjustmentType}
+                        onChange={(e) => setBulkAdjustmentType(e.target.value as any)}
+                        className="w-full px-2.5 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg outline-hidden font-semibold"
+                      >
+                        {bulkActionType.includes('price') && (
+                          <option value="percentage">{isRtl ? 'نسبة مئوية (+/- %)' : 'Percentage (+/- %)'}</option>
+                        )}
+                        <option value="flat">{isRtl ? 'قيمة مضافة أو مخصومة (+/-)' : 'Flat Delta (+/-)'}</option>
+                        <option value="set">{isRtl ? 'تعيين قيمة مطلقة ثابثة (=)' : 'Set Absolute (=)'}</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <label className="block text-[11px] text-gray-400 font-bold mb-1">
+                        {isRtl ? 'مقدار التعديل الرقمي' : 'Adjustment Value'}
+                      </label>
+                      <input
+                        type="number"
+                        value={bulkAdjustmentValue}
+                        onChange={(e) => setBulkAdjustmentValue(Number(e.target.value))}
+                        className="w-full px-2.5 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg outline-hidden font-mono"
+                        placeholder="e.g. 10 or -5"
+                      />
+                    </div>
+
+                    {bulkActionType === 'adjust_stock' ? (
+                      <div>
+                        <label className="block text-[11px] text-gray-400 font-bold mb-1">{isRtl ? 'المستودع الهدف' : 'Target Warehouse'}</label>
+                        <select
+                          value={bulkWarehouseId}
+                          onChange={(e) => setBulkWarehouseId(e.target.value)}
+                          className="w-full px-2.5 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg outline-hidden font-semibold"
+                        >
+                          {state.warehouses.map(w => (
+                            <option key={w.id} value={w.id}>{isRtl ? w.nameAr : w.nameEn}</option>
+                          ))}
+                        </select>
+                      </div>
+                    ) : (
+                      <div>
+                        <label className="block text-[11px] text-gray-400 font-bold mb-1">{isRtl ? 'درجة تقريب الكسور' : 'Precision Rounding'}</label>
+                        <select
+                          value={bulkRounding}
+                          onChange={(e) => setBulkRounding(e.target.value as any)}
+                          className="w-full px-2.5 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg outline-hidden font-semibold"
+                        >
+                          <option value="none">{isRtl ? 'دون تقريب' : 'No Rounding (Floating)'}</option>
+                          <option value="nearest">{isRtl ? 'تقريب لأقرب عدد صحيح' : 'Round to Nearest Integer'}</option>
+                          <option value="decimals">{isRtl ? 'منزلتين عشريتين (0.00)' : '2 Decimal Places'}</option>
+                        </select>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="pt-2">
+                    <button
+                      type="button"
+                      onClick={handleTriggerBulkInventoryUpdate}
+                      className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs rounded-lg cursor-pointer transition-colors flex items-center justify-center gap-1.5 shadow-sm shadow-indigo-500/10"
+                    >
+                      <PlusCircle className="w-4 h-4" />
+                      {isRtl ? 'تطبيق المعالجة الدفئية فوراً' : 'Execute Bulk Catalog Job Now'}
+                    </button>
+                  </div>
+                </div>
+
+              </div>
+
+              {/* 3. BATCH JOB LEDGER / ARCHIVE */}
+              <div className="p-5 border border-gray-150 dark:border-gray-800 rounded-2xl bg-white dark:bg-gray-950 space-y-3">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-gray-900 dark:text-white flex items-center gap-2">
+                  <History className="w-4 h-4 text-purple-500" />
+                  {isRtl ? 'دفتر العمليات الدفئية والتكرارية المنفذة' : 'Automated Batch Run Ledger'}
+                </h4>
+                
+                <div className="overflow-x-auto border border-gray-100 dark:border-gray-800 rounded-xl">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-gray-50 dark:bg-gray-800/40 text-gray-400 font-bold border-b border-gray-100 dark:border-gray-800 text-[10px] uppercase">
+                        <th className="p-3">{isRtl ? 'الوقت والتاريخ' : 'Execution Time'}</th>
+                        <th className="p-3">{isRtl ? 'نوع العملية' : 'Process Type'}</th>
+                        <th className="p-3">{isRtl ? 'النتائج والوصف المحاسبي' : 'Action Details & Impact Report'}</th>
+                        <th className="p-3">{isRtl ? 'القيود المعدلة' : 'Affected Records'}</th>
+                        <th className="p-3">{isRtl ? 'الحالة' : 'Status'}</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100 dark:divide-gray-800 font-medium">
+                      {batchLogsList.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="p-6 text-center text-gray-400 font-bold">
+                            {isRtl ? 'لا توجد أي معالجات دفئية مسجلة في هذا الجهاز بعد.' : 'No automated batch history logs found inside active ledger.'}
+                          </td>
+                        </tr>
+                      ) : (
+                        batchLogsList.map(log => (
+                          <tr key={log.id} className="hover:bg-gray-50/50 dark:hover:bg-gray-800/10 text-xs">
+                            <td className="p-3 font-mono text-[10px] text-gray-400 whitespace-nowrap">
+                              {new Date(log.timestamp).toLocaleString()}
+                            </td>
+                            <td className="p-3 whitespace-nowrap">
+                              <span className={`font-black px-2 py-0.5 rounded text-[10px] ${
+                                log.type === 'recurring_invoices'
+                                  ? 'bg-purple-50 dark:bg-purple-950/30 text-purple-600 dark:text-purple-400'
+                                  : 'bg-indigo-50 dark:bg-indigo-950/30 text-indigo-600 dark:text-indigo-400'
+                              }`}>
+                                {log.type === 'recurring_invoices'
+                                  ? (isRtl ? 'فوترة دورية' : 'RECURRING BILLING')
+                                  : (isRtl ? 'تعديل مخزون جماعي' : 'BULK CATALOG')}
+                              </span>
+                            </td>
+                            <td className="p-3 text-gray-700 dark:text-gray-300 max-w-[320px] font-semibold leading-relaxed">
+                              {isRtl ? log.detailsAr : log.detailsEn}
+                            </td>
+                            <td className="p-3 font-bold font-mono text-center">
+                              {log.recordsAffected}
+                            </td>
+                            <td className="p-3 whitespace-nowrap">
+                              <span className="font-bold bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-400 px-2 py-0.5 rounded-full text-[10px]">
+                                {isRtl ? 'ناجح' : 'SUCCESS'}
+                              </span>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* 4. MODAL TO REGISTER NEW RECURRING INVOICE */}
+              {showRecModal && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto">
+                  <div className="bg-white dark:bg-gray-900 border border-gray-150 dark:border-gray-800 rounded-2xl max-w-2xl w-full p-6 space-y-4 shadow-xl text-xs">
+                    <div className="flex justify-between items-center border-b border-gray-100 dark:border-gray-800 pb-3">
+                      <h4 className="text-sm font-bold text-gray-900 dark:text-white flex items-center gap-1.5">
+                        <Clock className="w-4 h-4 text-purple-500" />
+                        {isRtl ? 'تعريف دورة الفوترة وعقد اشتراك تكراري جديد' : 'Configure New Periodic Invoice Recurrence'}
+                      </h4>
+                      <button
+                        type="button"
+                        onClick={() => setShowRecModal(false)}
+                        className="text-gray-400 hover:text-gray-600 cursor-pointer"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    <form onSubmit={handleSaveRecurringTemplate} className="space-y-4">
+                      
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-[10px] text-gray-400 font-bold mb-1">
+                            {isRtl ? 'عنوان / مسمى العقد المجدول' : 'Template Title / Reference'}
+                          </label>
+                          <input
+                            type="text"
+                            required
+                            value={recTitle}
+                            onChange={(e) => setRecTitle(e.target.value)}
+                            className="w-full px-3 py-1.5 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg outline-hidden text-gray-800 dark:text-gray-100 font-semibold"
+                            placeholder={isRtl ? 'مثال: عقد صيانة السيرفرات السنوي' : 'e.g. Monthly server rent retainer'}
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] text-gray-400 font-bold mb-1">
+                            {isRtl ? 'نوع الفاتورة والعملية' : 'Type of Transaction'}
+                          </label>
+                          <select
+                            value={recType}
+                            onChange={(e) => {
+                              setRecType(e.target.value as any);
+                              setRecContactId('');
+                            }}
+                            className="w-full px-3 py-1.5 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg outline-hidden font-semibold"
+                          >
+                            <option value="sales">{isRtl ? 'مبيعات (صادرة للعميل)' : 'Sales Invoice'}</option>
+                            <option value="purchase">{isRtl ? 'مشتريات (واردة من مورد)' : 'Purchase Invoice'}</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div>
+                          <label className="block text-[10px] text-gray-400 font-bold mb-1">
+                            {isRtl ? 'الجهة المستفيدة (العميل / المورد)' : 'Contact Account'}
+                          </label>
+                          <select
+                            required
+                            value={recContactId}
+                            onChange={(e) => setRecContactId(e.target.value)}
+                            className="w-full px-3 py-1.5 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg outline-hidden font-semibold"
+                          >
+                            <option value="">{isRtl ? '-- حدد الحساب --' : '-- Choose Account --'}</option>
+                            {state.contacts
+                              .filter(c => recType === 'sales' ? c.type === 'customer' : c.type === 'supplier')
+                              .map(c => (
+                                <option key={c.id} value={c.id}>{isRtl ? c.nameAr : c.nameEn}</option>
+                              ))
+                            }
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] text-gray-400 font-bold mb-1">
+                            {isRtl ? 'طريقة السداد المحاسبية' : 'Payment Type'}
+                          </label>
+                          <select
+                            value={recPaymentType}
+                            onChange={(e) => setRecPaymentType(e.target.value as any)}
+                            className="w-full px-3 py-1.5 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg outline-hidden font-semibold"
+                          >
+                            <option value="credit">{isRtl ? 'ذمم / أجل' : 'Credit / Accounts Receivable'}</option>
+                            <option value="cash">{isRtl ? 'نقدي فوراً في الصندوق' : 'Cash on Delivery'}</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] text-gray-400 font-bold mb-1">
+                            {isRtl ? 'العملة والرمز' : 'Billing Currency'}
+                          </label>
+                          <select
+                            value={recCurrency}
+                            onChange={(e) => setRecCurrency(e.target.value)}
+                            className="w-full px-3 py-1.5 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg outline-hidden font-semibold"
+                          >
+                            {state.currencies.map(c => (
+                              <option key={c.code} value={c.code}>{c.code}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-[10px] text-gray-400 font-bold mb-1">
+                            {isRtl ? 'تكرار ومجال الدورة' : 'Recurrence Frequency'}
+                          </label>
+                          <select
+                            value={recFrequency}
+                            onChange={(e) => setRecFrequency(e.target.value as any)}
+                            className="w-full px-3 py-1.5 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg outline-hidden font-semibold"
+                          >
+                            <option value="daily">{isRtl ? 'يومي متكرر' : 'Daily'}</option>
+                            <option value="weekly">{isRtl ? 'أسبوعي متكرر' : 'Weekly'}</option>
+                            <option value="monthly">{isRtl ? 'شهري متكرر' : 'Monthly'}</option>
+                            <option value="yearly">{isRtl ? 'سنوي متكرر' : 'Yearly'}</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] text-gray-400 font-bold mb-1">
+                            {isRtl ? 'تاريخ الاستحقاق الأول / القادم' : 'First Trigger / Next Run Date'}
+                          </label>
+                          <input
+                            type="date"
+                            required
+                            value={recNextTriggerDate}
+                            onChange={(e) => setRecNextTriggerDate(e.target.value)}
+                            className="w-full px-3 py-1.5 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg outline-hidden font-mono font-semibold"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Line items detail table inside modal */}
+                      <div className="space-y-2 border-t border-gray-100 dark:border-gray-800 pt-3">
+                        <div className="flex justify-between items-center">
+                          <h5 className="font-extrabold text-xs text-gray-800 dark:text-gray-200">
+                            {isRtl ? 'بنود الفاتورة المجدولة والكميات' : 'Template Item Details'}
+                          </h5>
+                          <button
+                            type="button"
+                            onClick={() => setRecLines([...recLines, { itemId: '', quantity: 1, unitPrice: 0, discount: 0, taxRate: 5 }])}
+                            className="px-2 py-0.5 text-[10px] bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 rounded text-gray-600 dark:text-gray-300 font-bold cursor-pointer"
+                          >
+                            + {isRtl ? 'إضافة صنف' : 'Add Item'}
+                          </button>
+                        </div>
+
+                        <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1">
+                          {recLines.map((line, idx) => (
+                            <div key={idx} className="grid grid-cols-12 gap-2 items-center">
+                              <div className="col-span-4">
+                                <select
+                                  required
+                                  value={line.itemId}
+                                  onChange={(e) => {
+                                    const next = [...recLines];
+                                    next[idx].itemId = e.target.value;
+                                    const selectedItem = state.items.find(i => i.id === e.target.value);
+                                    if (selectedItem) {
+                                      next[idx].unitPrice = recType === 'sales' ? selectedItem.sellPrice : selectedItem.costPrice;
+                                    }
+                                    setRecLines(next);
+                                  }}
+                                  className="w-full px-2 py-1 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md outline-hidden font-semibold"
+                                >
+                                  <option value="">{isRtl ? '-- اختر صنف --' : '-- Item --'}</option>
+                                  {state.items.map(i => (
+                                    <option key={i.id} value={i.id}>{isRtl ? i.nameAr : i.nameEn}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div className="col-span-2">
+                                <input
+                                  type="number"
+                                  required
+                                  min={1}
+                                  placeholder={isRtl ? 'كمية' : 'Qty'}
+                                  value={line.quantity}
+                                  onChange={(e) => {
+                                    const next = [...recLines];
+                                    next[idx].quantity = Number(e.target.value);
+                                    setRecLines(next);
+                                  }}
+                                  className="w-full px-2 py-1 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md outline-hidden font-mono text-center"
+                                />
+                              </div>
+                              <div className="col-span-2">
+                                <input
+                                  type="number"
+                                  required
+                                  min={0}
+                                  placeholder={isRtl ? 'سعر مخصص' : 'Custom Price'}
+                                  value={line.unitPrice}
+                                  onChange={(e) => {
+                                    const next = [...recLines];
+                                    next[idx].unitPrice = Number(e.target.value);
+                                    setRecLines(next);
+                                  }}
+                                  className="w-full px-2 py-1 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md outline-hidden font-mono text-center"
+                                  title={isRtl ? 'أدخل 0 لاستخدام سعر الدليل المحدث تلقائياً عند التشغيل' : 'Leave 0 to automatically fetch the actual price from product catalogue on trigger'}
+                                />
+                              </div>
+                              <div className="col-span-2">
+                                <input
+                                  type="number"
+                                  required
+                                  min={0}
+                                  placeholder={isRtl ? 'خصم' : 'Discount'}
+                                  value={line.discount}
+                                  onChange={(e) => {
+                                    const next = [...recLines];
+                                    next[idx].discount = Number(e.target.value);
+                                    setRecLines(next);
+                                  }}
+                                  className="w-full px-2 py-1 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md outline-hidden font-mono text-center"
+                                />
+                              </div>
+                              <div className="col-span-1.5">
+                                <input
+                                  type="number"
+                                  required
+                                  min={0}
+                                  placeholder="Tax %"
+                                  value={line.taxRate}
+                                  onChange={(e) => {
+                                    const next = [...recLines];
+                                    next[idx].taxRate = Number(e.target.value);
+                                    setRecLines(next);
+                                  }}
+                                  className="w-full px-2 py-1 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md outline-hidden font-mono text-center"
+                                />
+                              </div>
+                              <div className="col-span-0.5 text-center">
+                                <button
+                                  type="button"
+                                  disabled={recLines.length === 1}
+                                  onClick={() => setRecLines(recLines.filter((_, i) => i !== idx))}
+                                  className="text-gray-400 hover:text-red-500 cursor-pointer disabled:opacity-30"
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="flex justify-end gap-2 border-t border-gray-100 dark:border-gray-800 pt-3">
+                        <button
+                          type="button"
+                          onClick={() => setShowRecModal(false)}
+                          className="px-4 py-2 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 font-extrabold rounded-lg cursor-pointer"
+                        >
+                          {isRtl ? 'إلغاء' : 'Cancel'}
+                        </button>
+                        <button
+                          type="submit"
+                          className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white font-extrabold rounded-lg cursor-pointer"
+                        >
+                          {isRtl ? 'حفظ وتثبيت القالب' : 'Save & Active Rule'}
+                        </button>
+                      </div>
+
+                    </form>
+                  </div>
+                </div>
+              )}
+
+            </div>
+          );
+        })()}
+
       </div>
+    </div>
     </div>
   );
 }

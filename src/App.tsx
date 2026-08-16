@@ -69,6 +69,39 @@ export default function App() {
     }
   }, [state, isRtl, lang]);
 
+  // Keyboard shortcut listener for module switching (Ctrl/Cmd + 1-9)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        const keyNum = parseInt(e.key, 10);
+        if (keyNum >= 1 && keyNum <= 9) {
+          const tabIds: ('dashboard' | 'accounting' | 'inventory' | 'sales' | 'purchases' | 'cash_bank' | 'pos' | 'reports' | 'settings')[] = [
+            'dashboard',
+            'accounting',
+            'inventory',
+            'sales',
+            'purchases',
+            'cash_bank',
+            'pos',
+            'reports',
+            'settings'
+          ];
+          const targetTab = tabIds[keyNum - 1];
+          if (targetTab) {
+            e.preventDefault();
+            setActiveTab(targetTab);
+            setIsMobileMenuOpen(false);
+          }
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
+
   // Background Scheduler Trigger
   useEffect(() => {
     const timer = setTimeout(async () => {
@@ -254,7 +287,7 @@ export default function App() {
 
           {/* Links list */}
           <nav className="flex-1 p-3 space-y-1.5 overflow-y-auto">
-            {navigationItems.map(item => {
+            {navigationItems.map((item, index) => {
               const Icon = item.icon;
               const isActive = activeTab === item.id;
               return (
@@ -264,17 +297,28 @@ export default function App() {
                     setActiveTab(item.id);
                     setIsMobileMenuOpen(false);
                   }}
-                  className={`w-full flex items-center gap-3.5 px-3.5 py-2.5 text-xs font-bold rounded-xl transition-all cursor-pointer ${
+                  className={`w-full flex items-center justify-between gap-3.5 px-3.5 py-2.5 text-xs font-bold rounded-xl transition-all cursor-pointer ${
                     isActive
                       ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/10'
                       : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50 dark:hover:bg-gray-850'
                   }`}
-                  title={item.label}
+                  title={`${item.label} (Ctrl+${index + 1})`}
                 >
-                  <Icon className="w-5 h-5 flex-shrink-0" />
-                  <span className={`truncate transition-opacity duration-150 ${isSidebarCollapsed ? 'md:hidden opacity-0' : 'opacity-100'}`}>
-                    {item.label}
-                  </span>
+                  <div className="flex items-center gap-3.5 truncate">
+                    <Icon className="w-5 h-5 flex-shrink-0" />
+                    <span className={`truncate transition-opacity duration-150 ${isSidebarCollapsed ? 'md:hidden opacity-0' : 'opacity-100'}`}>
+                      {item.label}
+                    </span>
+                  </div>
+                  {!isSidebarCollapsed && (
+                    <kbd className={`hidden lg:inline-block px-1.5 py-0.5 rounded text-[9px] font-mono border uppercase tracking-wider ${
+                      isActive 
+                        ? 'bg-indigo-750 border-indigo-500 text-indigo-100' 
+                        : 'bg-gray-100 dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-400'
+                    }`}>
+                      Ctrl+{index + 1}
+                    </kbd>
+                  )}
                 </button>
               );
             })}

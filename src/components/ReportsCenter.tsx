@@ -15,11 +15,14 @@ import {
   History,
   Activity,
   ChevronDown,
-  Download
+  Download,
+  FileSpreadsheet
 } from 'lucide-react';
 import { ERPState } from '../data/initialData';
 import { getTranslation, TranslationKey } from '../data/translations';
 import { calculateAccountBalances } from '../utils/accounting';
+import ExportReportButton from './ExportReportButton';
+import { exportConsolidatedFinancialWorkbook } from '../utils/exportService';
 
 interface ReportsCenterProps {
   state: ERPState;
@@ -34,6 +37,15 @@ export default function ReportsCenter({ state }: ReportsCenterProps) {
   const [selectedLedgerAccount, setSelectedLedgerAccount] = useState<string>('1101'); // Default to Main Cash
   const [selectedWarehouse, setSelectedWarehouse] = useState<string>('all');
   const [inventorySearch, setInventorySearch] = useState<string>('');
+  const [isConsolidatedExporting, setIsConsolidatedExporting] = useState(false);
+
+  const handleExportConsolidated = () => {
+    setIsConsolidatedExporting(true);
+    exportConsolidatedFinancialWorkbook(state);
+    setTimeout(() => {
+      setIsConsolidatedExporting(false);
+    }, 2000);
+  };
 
   // Get current accounts with their balanced sums (running debits and credits)
   const accountsWithBalances = state.accounts.map(acc => {
@@ -118,451 +130,80 @@ export default function ReportsCenter({ state }: ReportsCenterProps) {
 
   const isBalanceSheetBalanced = Math.abs(computedAssetTotal - liabilitiesAndEquityTotal) < 1;
 
-  // REUSABLE CSV EXPORT DOWNLOAD FUNCTION
-  const downloadCSV = (filename: string, headers: string[], rows: string[][]) => {
-    // Excel needs UTF-8 BOM (\uFEFF) to read Arabic text correctly
-    const BOM = '\uFEFF';
-    
-    const escapeCSV = (val: string | number) => {
-      const str = val === undefined || val === null ? '' : String(val);
-      // Escape double quotes by doubling them, and wrap in double quotes if there are commas, newlines, or quotes
-      if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
-        return `"${str.replace(/"/g, '""')}"`;
-      }
-      return str;
-    };
-
-    const csvContent = [
-      headers.map(escapeCSV).join(','),
-      ...rows.map(row => row.map(escapeCSV).join(','))
-    ].join('\r\n');
-
-    const blob = new Blob([BOM + csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', filename);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
-
-  // CSV EXPORT HANDLERS
-  const handleExportTrialBalance = () => {
-    const filename = `Trial_Balance_${new Date().toISOString().split('T')[0]}.csv`;
-    const headers = [
-      isRtl ? 'رقم الحساب' : 'Account Code',
-      isRtl ? 'اسم الحساب (عربي)' : 'Account Name (AR)',
-      isRtl ? 'اسم الحساب (إنجليزي)' : 'Account Name (EN)',
-      isRtl ? 'نوع الحساب' : 'Account Type',
-      isRtl ? 'الحركة المدينة (ل.س)' : 'Debit Movement (SYP)',
-      isRtl ? 'الحركة الدائنة (ل.س)' : 'Credit Movement (SYP)',
-      isRtl ? 'الرصيد الختامي (ل.س)' : 'Closing Balance (SYP)',
-      isRtl ? 'العملة الأصلية' : 'Original Currency'
-    ];
-
-    const rows = accountsWithBalances.map(acc => [
-      acc.code,
-      acc.nameAr,
-      acc.nameEn,
-      acc.type,
-      acc.debitTotal.toString(),
-      acc.creditTotal.toString(),
-      acc.balance.toString(),
-      acc.currencyCode
-    ]);
-
-    // Add aggregate total row
-    rows.push([
-      '---',
-      isRtl ? 'الإجماليات العامة' : 'Aggregate Totals',
-      'Aggregate Totals',
-      '--',
-      totalDebits.toString(),
-      totalCredits.toString(),
-      isTrialBalanced ? (isRtl ? 'متوازن' : 'Balanced') : (isRtl ? 'غير متوازن' : 'Unbalanced'),
-      'SYP'
-    ]);
-
-    downloadCSV(filename, headers, rows);
-  };
-
-  const handleExportIncomeStatement = () => {
-    const filename = `Income_Statement_${new Date().toISOString().split('T')[0]}.csv`;
-    const headers = [
-      isRtl ? 'القسم المحاسبي' : 'Accounting Section',
-      isRtl ? 'رمز الحساب' : 'Account Code',
-      isRtl ? 'اسم البند (إنجليزي)' : 'Line Item (EN)',
-      isRtl ? 'اسم البند (عربي)' : 'Line Item (AR)',
-      isRtl ? 'المبلغ (ل.س)' : 'Amount (SYP)'
-    ];
-
-    const rows: string[][] = [];
-
-    // Revenues
-    rows.push([isRtl ? 'الإيرادات ومبيعات النشاط' : 'OPERATING REVENUES', '', '', '', '']);
-    revenueAccounts.forEach(a => {
-      rows.push([
-        isRtl ? 'إيرادات' : 'Revenue',
-        a.code,
-        a.nameEn,
-        a.nameAr,
-        (a.creditTotal - a.debitTotal).toString()
-      ]);
-    });
-    rows.push([isRtl ? 'إجمالي الإيرادات' : 'Total Revenues', '', 'Total Operating Revenue', 'إجمالي الإيرادات والمبيعات', totalRevenues.toString()]);
-    rows.push(['', '', '', '', '']); // blank row
-
-    // COGS
-    rows.push([isRtl ? 'تكلفة المبيعات' : 'COST OF GOODS SOLD', '', '', '', '']);
-    rows.push([
-      isRtl ? 'تكلفة المبيعات' : 'COGS',
-      '5101',
-      'Inventory Sourcing Drawdowns',
-      'تكلفة المواد المسحوبة للمخازن',
-      totalCOGS.toString()
-    ]);
-    rows.push([isRtl ? 'إجمالي تكلفة المبيعات' : 'Total COGS', '', 'Total Cost of Goods Sold', 'إجمالي تكلفة المبيعات', `-${totalCOGS}`]);
-    rows.push(['', '', '', '', '']); // blank row
-
-    // Gross Profit
-    rows.push([isRtl ? 'إجمالي الربح التجاري' : 'GROSS TRADING PROFIT', '', 'Gross Trading Profit', 'إجمالي الربح (الهامش التجاري)', grossProfit.toString()]);
-    rows.push(['', '', '', '', '']); // blank row
-
-    // OPEX
-    rows.push([isRtl ? 'المصاريف التشغيلية والإدارية' : 'OPERATING EXPENSES (OPEX)', '', '', '', '']);
-    expenseAccounts.forEach(a => {
-      rows.push([
-        isRtl ? 'مصاريف' : 'Expense',
-        a.code,
-        a.nameEn,
-        a.nameAr,
-        (a.debitTotal - a.creditTotal).toString()
-      ]);
-    });
-    rows.push([isRtl ? 'إجمالي المصاريف' : 'Total OPEX', '', 'Total Operating Expenses', 'إجمالي المصاريف الإدارية والتشغيلية', `-${totalExpenses}`]);
-    rows.push(['', '', '', '', '']); // blank row
-
-    // Net Profit
-    rows.push([
-      isRtl ? 'صافي الربح / الخسارة النهائي' : 'NET INCOME',
-      '',
-      'CONSOLIDATED NET TRADING INCOME',
-      'صافي أرباح / خسائر النشاط للفترة',
-      netProfit.toString()
-    ]);
-
-    downloadCSV(filename, headers, rows);
-  };
-
-  const handleExportBalanceSheet = () => {
-    const filename = `Balance_Sheet_${new Date().toISOString().split('T')[0]}.csv`;
-    const headers = [
-      isRtl ? 'تصنيف الميزانية' : 'Balance Sheet Classification',
-      isRtl ? 'رمز الحساب' : 'Account Code',
-      isRtl ? 'الوصف (إنجليزي)' : 'Description (EN)',
-      isRtl ? 'الوصف (عربي)' : 'Description (AR)',
-      isRtl ? 'المبلغ (ل.س)' : 'Amount (SYP)'
-    ];
-
-    const rows: string[][] = [];
-
-    // Assets
-    rows.push([isRtl ? 'الموجودات والأصول' : 'ASSETS', '', '', '', '']);
-    assetAccounts.forEach(a => {
-      rows.push([
-        isRtl ? 'أصول متداولة' : 'Current Assets',
-        a.code,
-        a.nameEn,
-        a.nameAr,
-        (a.debitTotal - a.creditTotal).toString()
-      ]);
-    });
-    rows.push([
-      isRtl ? 'مخزون بضاعة آخر المدة' : 'Inventory Stock',
-      '1106',
-      'Warehouse Stock Inventory',
-      'بضاعة آخر المدة بالمخازن',
-      stockAssetValue.toString()
-    ]);
-    rows.push([isRtl ? 'إجمالي الأصول' : 'Total Assets', '', 'Total Assets', 'إجمالي الأصول والموجودات', computedAssetTotal.toString()]);
-    rows.push(['', '', '', '', '']); // blank row
-
-    // Liabilities
-    rows.push([isRtl ? 'الالتزامات والخصوم' : 'LIABILITIES', '', '', '', '']);
-    liabilityAccounts.forEach(a => {
-      rows.push([
-        isRtl ? 'خصوم متداولة' : 'Current Liabilities',
-        a.code,
-        a.nameEn,
-        a.nameAr,
-        (a.creditTotal - a.debitTotal).toString()
-      ]);
-    });
-    rows.push([isRtl ? 'إجمالي الخصوم' : 'Total Liabilities', '', 'Total Liabilities', 'إجمالي الخصوم والمطاليب', totalLiabilities.toString()]);
-    rows.push(['', '', '', '', '']); // blank row
-
-    // Equity
-    rows.push([isRtl ? 'حقوق الملكية ورأس المال' : 'OWNER EQUITY', '', '', '', '']);
-    equityAccounts.forEach(a => {
-      rows.push([
-        isRtl ? 'حقوق ملكية' : 'Equity Capital',
-        a.code,
-        a.nameEn,
-        a.nameAr,
-        (a.creditTotal - a.debitTotal).toString()
-      ]);
-    });
-    rows.push([
-      isRtl ? 'أرباح الدورة الحالية' : 'Current Net Profit',
-      '',
-      'Current Period Net Earnings',
-      'صافي أرباح الدورة الحالية',
-      netProfit.toString()
-    ]);
-    rows.push([isRtl ? 'إجمالي حقوق الملكية' : 'Total Equity', '', 'Total Equity', 'إجمالي حقوق الملكية المساهمة', totalEquity.toString()]);
-    rows.push([isRtl ? 'إجمالي الخصوم وحقوق الملكية' : 'Total Liabilities & Equity', '', 'Total Liabilities & Owner Equity', 'إجمالي الخصوم وحقوق الملكية', liabilitiesAndEquityTotal.toString()]);
-
-    downloadCSV(filename, headers, rows);
-  };
-
-  const handleExportGeneralLedger = () => {
-    const acc = state.accounts.find(a => a.code === selectedLedgerAccount);
-    if (!acc) return;
-
-    const filename = `General_Ledger_${selectedLedgerAccount}_${new Date().toISOString().split('T')[0]}.csv`;
-    const headers = [
-      isRtl ? 'التاريخ' : 'Date',
-      isRtl ? 'القيد المرجعي' : 'JE Reference',
-      isRtl ? 'البيان المحاسبي (إنجليزي)' : 'Narration (EN)',
-      isRtl ? 'البيان المحاسبي (عربي)' : 'Narration (AR)',
-      isRtl ? 'المدين (العملة المحلية)' : 'Debit (SYP)',
-      isRtl ? 'الدائن (العملة المحلية)' : 'Credit (SYP)',
-      isRtl ? 'الرصيد التراكمي' : 'Running Balance',
-      isRtl ? 'عملة الحساب' : 'Account Currency'
-    ];
-
-    const ledgerRows: { date: string; ref: string; descEn: string; descAr: string; deb: number; cred: number; balance: number }[] = [];
-
-    state.journalEntries.forEach(je => {
-      je.lines.forEach(line => {
-        if (line.accountCode === selectedLedgerAccount) {
-          ledgerRows.push({
-            date: je.entryDate,
-            ref: je.reference,
-            descEn: je.narrationEn,
-            descAr: je.narrationAr,
-            deb: line.debit,
-            cred: line.credit,
-            balance: 0
-          });
-        }
-      });
-    });
-
-    ledgerRows.sort((a, b) => a.date.localeCompare(b.date));
-
-    let running = 0;
-    const isDebitNorm = acc.type === 'asset' || acc.type === 'expense';
-    let totalDeb = 0;
-    let totalCred = 0;
-
-    const rows = ledgerRows.map(row => {
-      if (isDebitNorm) {
-        running += (row.deb - row.cred);
-      } else {
-        running += (row.cred - row.deb);
-      }
-      totalDeb += row.deb;
-      totalCred += row.cred;
-
-      return [
-        row.date,
-        row.ref,
-        row.descEn,
-        row.descAr,
-        row.deb.toString(),
-        row.cred.toString(),
-        running.toString(),
-        acc.currencyCode
-      ];
-    });
-
-    // Add totals row at the end
-    rows.push([
-      '---',
-      isRtl ? 'الإجماليات العامة والترصيد' : 'Totals & Closing Balance',
-      'Chronological totals for period',
-      'المجاميع التراكمية والأرصدة',
-      totalDeb.toString(),
-      totalCred.toString(),
-      running.toString(),
-      acc.currencyCode
-    ]);
-
-    downloadCSV(filename, headers, rows);
-  };
-
-  const handleExportInventoryValuation = () => {
-    const filename = `Inventory_Valuation_${new Date().toISOString().split('T')[0]}.csv`;
-    const headers = [
-      isRtl ? 'رمز المادة SKU' : 'SKU Code',
-      isRtl ? 'اسم المادة (إنجليزي)' : 'Item Name (EN)',
-      isRtl ? 'اسم المادة (عربي)' : 'Item Name (AR)',
-      isRtl ? 'الفئة (إنجليزي)' : 'Category (EN)',
-      isRtl ? 'الفئة (عربي)' : 'Category (AR)',
-      isRtl ? 'الوحدة (إنجليزي)' : 'Unit (EN)',
-      isRtl ? 'الوحدة (عربي)' : 'Unit (AR)',
-      isRtl ? 'سعر التكلفة (عملة الأصل)' : 'Cost Price (Original)',
-      isRtl ? 'عملة التكلفة' : 'Cost Currency',
-      isRtl ? 'سعر التكلفة (ل.س)' : 'Cost Price (SYP)',
-      isRtl ? 'سعر البيع (ل.س)' : 'Sell Price (SYP)',
-      isRtl ? 'الكمية الإجمالية متوفرة' : 'Total Quantity in Stock',
-      isRtl ? 'إجمالي تقييم المخزون (ل.س)' : 'Total Valuation (SYP)',
-      isRtl ? 'إجمالي قيمة المبيعات المتوقعة (ل.س)' : 'Total Potential Sales (SYP)',
-      isRtl ? 'حد إعادة الطلب' : 'Reorder Level',
-      isRtl ? 'حالة المخزون' : 'Stock Status'
-    ];
-
-    const products = state.items.filter(i => i.type === 'product');
-    let totalQty = 0;
-    let totalVal = 0;
-    let totalPotSales = 0;
-    let lowStockCount = 0;
-
-    const rows = products.map(item => {
-      const category = state.categories.find(c => c.id === item.categoryId);
-      const categoryEn = category ? category.nameEn : 'Uncategorized';
-      const categoryAr = category ? category.nameAr : 'غير مصنف';
-
-      // Stock quantity based on selected warehouse or all
-      let qty = 0;
-      if (selectedWarehouse === 'all') {
-        qty = Object.values(item.quantityInStock).reduce((s, q) => s + q, 0);
-      } else {
-        qty = item.quantityInStock[selectedWarehouse] || 0;
-      }
-
-      totalQty += qty;
-
-      const rate = state.currencies.find(c => c.code === item.costPriceCurrency)?.exchangeRate || 1;
-      const costInSYP = item.costPrice * rate;
-      const itemValuation = costInSYP * qty;
-      totalVal += itemValuation;
-
-      const sellRate = state.currencies.find(c => c.code === item.sellPriceCurrency)?.exchangeRate || 1;
-      const sellInSYP = item.sellPrice * sellRate;
-      const itemPotSales = sellInSYP * qty;
-      totalPotSales += itemPotSales;
-
-      const isLow = qty <= item.reorderLevel;
-      if (isLow) lowStockCount++;
-      const statusStr = isLow 
-        ? (isRtl ? 'مخزون منخفض' : 'Low Stock') 
-        : (isRtl ? 'سليم' : 'Healthy');
-
-      return [
-        item.code,
-        item.nameEn,
-        item.nameAr,
-        categoryEn,
-        categoryAr,
-        item.unitEn,
-        item.unitAr,
-        item.costPrice.toString(),
-        item.costPriceCurrency,
-        costInSYP.toString(),
-        sellInSYP.toString(),
-        qty.toString(),
-        itemValuation.toString(),
-        itemPotSales.toString(),
-        item.reorderLevel.toString(),
-        statusStr
-      ];
-    });
-
-    // Grand totals row
-    rows.push([
-      '---',
-      isRtl ? 'إجمالي السلع وجرد المستودع' : 'Inventory Valuation Totals',
-      `Warehouse Filter: ${selectedWarehouse === 'all' ? 'All Warehouses' : (state.warehouses.find(w => w.id === selectedWarehouse)?.nameEn || selectedWarehouse)}`,
-      '--',
-      '--',
-      '--',
-      '--',
-      '--',
-      '--',
-      '--',
-      '---',
-      totalQty.toString(),
-      totalVal.toString(),
-      totalPotSales.toString(),
-      '--',
-      isRtl ? `مواد منخفضة: ${lowStockCount}` : `Low Stock Items: ${lowStockCount}`
-    ]);
-
-    downloadCSV(filename, headers, rows);
-  };
-
   return (
     <div className="space-y-6">
-      {/* Sub menu selector */}
-      <div className="flex flex-wrap gap-2 border-b border-gray-250 dark:border-gray-800 pb-3">
+      {/* Sub menu selector & Global Export Actions */}
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-250 dark:border-gray-800 pb-3">
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => setActiveReport('trial')}
+            className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+              activeReport === 'trial'
+                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/10'
+                : 'bg-white dark:bg-gray-900 border border-gray-150 dark:border-gray-800 text-gray-500 hover:text-gray-850 dark:hover:text-gray-200'
+            }`}
+          >
+            <FileCheck className="w-4 h-4" />
+            {t('trialBalance')}
+          </button>
+          <button
+            onClick={() => setActiveReport('income')}
+            className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+              activeReport === 'income'
+                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/10'
+                : 'bg-white dark:bg-gray-900 border border-gray-150 dark:border-gray-800 text-gray-500 hover:text-gray-850 dark:hover:text-gray-200'
+            }`}
+          >
+            <TrendingUp className="w-4 h-4" />
+            {isRtl ? 'قائمة الأرباح والخسائر (الدخل)' : 'Profit & Loss Statement'}
+          </button>
+          <button
+            onClick={() => setActiveReport('balance_sheet')}
+            className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+              activeReport === 'balance_sheet'
+                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/10'
+                : 'bg-white dark:bg-gray-900 border border-gray-150 dark:border-gray-800 text-gray-500 hover:text-gray-850 dark:hover:text-gray-200'
+            }`}
+          >
+            <FilePieChart className="w-4 h-4" />
+            {t('balanceSheet')}
+          </button>
+          <button
+            onClick={() => setActiveReport('general_ledger')}
+            className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+              activeReport === 'general_ledger'
+                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/10'
+                : 'bg-white dark:bg-gray-900 border border-gray-150 dark:border-gray-800 text-gray-500 hover:text-gray-850 dark:hover:text-gray-200'
+            }`}
+          >
+            <BookOpen className="w-4 h-4" />
+            {isRtl ? 'دفتر الأستاذ العام' : 'General Ledger'}
+          </button>
+          <button
+            onClick={() => setActiveReport('inventory')}
+            className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+              activeReport === 'inventory'
+                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/10'
+                : 'bg-white dark:bg-gray-900 border border-gray-150 dark:border-gray-800 text-gray-500 hover:text-gray-850 dark:hover:text-gray-200'
+            }`}
+          >
+            <Activity className="w-4 h-4" />
+            {isRtl ? 'تقرير جرد وتقييم المخزون' : 'Inventory Valuation'}
+          </button>
+        </div>
+
+        {/* Global Multi-Sheet Excel Export Action */}
         <button
-          onClick={() => setActiveReport('trial')}
-          className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-            activeReport === 'trial'
-              ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/10'
-              : 'bg-white dark:bg-gray-900 border border-gray-150 dark:border-gray-800 text-gray-500 hover:text-gray-850 dark:hover:text-gray-200'
-          }`}
+          onClick={handleExportConsolidated}
+          className="flex items-center gap-2 px-3.5 py-2 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-all cursor-pointer hover:shadow-md"
+          title={isRtl ? 'تصدير كافة القوائم المالية في ملف إكسل واحد متعدد الصفحات' : 'Export all financial statements into a multi-tab Excel workbook'}
         >
-          <FileCheck className="w-4 h-4" />
-          {t('trialBalance')}
-        </button>
-        <button
-          onClick={() => setActiveReport('income')}
-          className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-            activeReport === 'income'
-              ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/10'
-              : 'bg-white dark:bg-gray-900 border border-gray-150 dark:border-gray-800 text-gray-500 hover:text-gray-850 dark:hover:text-gray-200'
-          }`}
-        >
-          <TrendingUp className="w-4 h-4" />
-          {isRtl ? 'قائمة الأرباح والخسائر (الدخل)' : 'Profit & Loss Statement'}
-        </button>
-        <button
-          onClick={() => setActiveReport('balance_sheet')}
-          className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-            activeReport === 'balance_sheet'
-              ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/10'
-              : 'bg-white dark:bg-gray-900 border border-gray-150 dark:border-gray-800 text-gray-500 hover:text-gray-850 dark:hover:text-gray-200'
-          }`}
-        >
-          <FilePieChart className="w-4 h-4" />
-          {t('balanceSheet')}
-        </button>
-        <button
-          onClick={() => setActiveReport('general_ledger')}
-          className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-            activeReport === 'general_ledger'
-              ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/10'
-              : 'bg-white dark:bg-gray-900 border border-gray-150 dark:border-gray-800 text-gray-500 hover:text-gray-850 dark:hover:text-gray-200'
-          }`}
-        >
-          <BookOpen className="w-4 h-4" />
-          {isRtl ? 'دفتر الأستاذ العام' : 'General Ledger'}
-        </button>
-        <button
-          onClick={() => setActiveReport('inventory')}
-          className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-            activeReport === 'inventory'
-              ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/10'
-              : 'bg-white dark:bg-gray-900 border border-gray-150 dark:border-gray-800 text-gray-500 hover:text-gray-850 dark:hover:text-gray-200'
-          }`}
-        >
-          <Activity className="w-4 h-4" />
-          {isRtl ? 'تقرير جرد وتقييم المخزون' : 'Inventory Valuation'}
+          <FileSpreadsheet className="w-4 h-4" />
+          <span>
+            {isConsolidatedExporting
+              ? (isRtl ? 'جاري تجهيز المصنف...' : 'Preparing Package...')
+              : (isRtl ? 'تصدير الحزمة المالية الموحدة (Excel)' : 'Consolidated Financial Package (.xls)')}
+          </span>
         </button>
       </div>
 
@@ -601,13 +242,7 @@ export default function ReportsCenter({ state }: ReportsCenterProps) {
               <span className="text-xs font-bold uppercase tracking-tight text-gray-700 dark:text-gray-300">
                 {isRtl ? 'جدول ميزان المراجعة العام' : 'General Trial Balance Worksheet'}
               </span>
-              <button
-                onClick={handleExportTrialBalance}
-                className="px-3 py-1.5 bg-[#1C1F26] hover:bg-[#25282F] border border-[#2D323C] rounded-lg text-xs font-semibold text-gray-205 hover:text-white flex items-center gap-1.5 cursor-pointer transition-all hover:border-blue-500"
-              >
-                <Download className="w-3.5 h-3.5 text-blue-400" />
-                {isRtl ? 'تصدير كـ CSV' : 'Export to CSV'}
-              </button>
+              <ExportReportButton reportType="trial" state={state} />
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse text-xs md:text-sm">
@@ -665,13 +300,7 @@ export default function ReportsCenter({ state }: ReportsCenterProps) {
               </h3>
               <p className="text-xs text-gray-400">FOR PERIOD ENDING: 31-DEC-2026 | CONVERTED EQUIVALENT IN SYP</p>
             </div>
-            <button
-              onClick={handleExportIncomeStatement}
-              className="px-3 py-1.5 bg-[#1C1F26] hover:bg-[#25282F] border border-[#2D323C] rounded-lg text-xs font-semibold text-gray-205 hover:text-white flex items-center gap-1.5 cursor-pointer transition-all hover:border-blue-500"
-            >
-              <Download className="w-3.5 h-3.5 text-blue-400" />
-              {isRtl ? 'تصدير' : 'Export'}
-            </button>
+            <ExportReportButton reportType="income" state={state} />
           </div>
 
           <div className="space-y-4 text-xs font-semibold">
@@ -757,13 +386,7 @@ export default function ReportsCenter({ state }: ReportsCenterProps) {
               </h3>
               <p className="text-xs text-gray-400">AS AT DECEMBER 31, 2026 | VALUES REPRESENT LOCAL SYP EQUIVALENTS</p>
             </div>
-            <button
-              onClick={handleExportBalanceSheet}
-              className="px-3 py-1.5 bg-[#1C1F26] hover:bg-[#25282F] border border-[#2D323C] rounded-lg text-xs font-semibold text-gray-205 hover:text-white flex items-center gap-1.5 cursor-pointer transition-all hover:border-blue-500"
-            >
-              <Download className="w-3.5 h-3.5 text-blue-400" />
-              {isRtl ? 'تصدير' : 'Export'}
-            </button>
+            <ExportReportButton reportType="balance_sheet" state={state} />
           </div>
 
           {/* Asset matches liability banner */}
@@ -875,13 +498,11 @@ export default function ReportsCenter({ state }: ReportsCenterProps) {
                 ))}
               </select>
 
-              <button
-                onClick={handleExportGeneralLedger}
-                className="px-3 py-2 bg-[#1C1F26] hover:bg-[#25282F] border border-[#2D323C] rounded-lg text-xs font-semibold text-gray-205 hover:text-white flex items-center gap-1.5 cursor-pointer transition-all hover:border-blue-500"
-              >
-                <Download className="w-3.5 h-3.5 text-blue-400" />
-                {isRtl ? 'تصدير' : 'Export'}
-              </button>
+              <ExportReportButton
+                reportType="general_ledger"
+                state={state}
+                selectedLedgerAccount={selectedLedgerAccount}
+              />
             </div>
           </div>
 
@@ -1007,14 +628,12 @@ export default function ReportsCenter({ state }: ReportsCenterProps) {
                 ))}
               </select>
 
-              {/* CSV Export Button */}
-              <button
-                onClick={handleExportInventoryValuation}
-                className="px-3 py-2 bg-[#1C1F26] hover:bg-[#25282F] border border-[#2D323C] rounded-lg text-xs font-semibold text-gray-205 hover:text-white flex items-center gap-1.5 cursor-pointer transition-all hover:border-blue-500"
-              >
-                <Download className="w-3.5 h-3.5 text-blue-400" />
-                {isRtl ? 'تصدير كـ CSV' : 'Export to CSV'}
-              </button>
+              {/* Export Dropdown Button */}
+              <ExportReportButton
+                reportType="inventory"
+                state={state}
+                selectedWarehouse={selectedWarehouse}
+              />
             </div>
           </div>
 

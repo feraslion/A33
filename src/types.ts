@@ -119,6 +119,7 @@ export interface Contact {
   nameEn: string;
   phone: string;
   email: string;
+  address?: string;
   taxNumber?: string;
   currencyCode: string;
   balance: number; // current balance in contact currency (debit is positive, credit is negative for customers usually)
@@ -277,3 +278,61 @@ export interface SyncQueueItem {
   status: 'pending' | 'syncing' | 'failed';
   errorMessage?: string;
 }
+
+// Batch Processing & Recurring Vouchers
+export interface RecurringInvoice {
+  id: string;
+  type: 'sales' | 'purchase';
+  title: string;
+  contactId: string;
+  paymentType: 'cash' | 'credit';
+  currencyCode: string;
+  frequency: 'daily' | 'weekly' | 'monthly' | 'yearly';
+  lines: {
+    itemId: string;
+    quantity: number;
+    unitPrice: number; // custom override, or 0/null to fetch from current product catalog price
+    discount: number;
+    taxRate: number;
+  }[];
+  isActive: boolean;
+  lastTriggered?: string;
+  nextTriggerDate: string;
+  createdAt: string;
+}
+
+export interface BatchJobLog {
+  id: string;
+  type: 'recurring_invoices' | 'bulk_inventory';
+  timestamp: string;
+  status: 'success' | 'failed';
+  detailsAr: string;
+  detailsEn: string;
+  recordsAffected: number;
+}
+
+// Hardware, Barcode & Printer Configuration
+export type PrinterType = 'thermal_80mm' | 'thermal_58mm' | 'standard_a4' | 'standard_letter';
+export type BarcodeFormat = 'CODE128' | 'EAN13' | 'EAN8' | 'UPCA' | 'CODE39' | 'QR';
+
+export interface PrinterConfig {
+  defaultPrinter: PrinterType;
+  thermalWidth: '80mm' | '58mm';
+  autoPrintOnCheckout: boolean;
+  showStoreLogo: boolean;
+  showTaxNumber: boolean;
+  showCashierName: boolean;
+  showQrCode: boolean;
+  showBarcode: boolean;
+  showTafqeet: boolean;
+  showTermsAndConditions: boolean;
+  headerCustomTextAr?: string;
+  headerCustomTextEn?: string;
+  footerCustomTextAr?: string;
+  footerCustomTextEn?: string;
+  thermalFeedLines: number;
+  barcodeFormat: BarcodeFormat;
+  enableScannerSound: boolean;
+}
+
+

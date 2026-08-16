@@ -264,3 +264,139 @@ export function generateJournalEntryFromVoucher(
     isSynced: false
   };
 }
+
+/**
+ * Converts numbers into Arabic spoken currency words (Tafqeet)
+ */
+export function numberToArabicWords(num: number, currency: string = 'SYP'): string {
+  if (isNaN(num) || num === 0) return 'صفر فقط لا غير';
+  
+  const ones = ['', 'واحد', 'اثنان', 'ثلاثة', 'أربعة', 'خمسة', 'ستة', 'سبعة', 'ثمانية', 'تسعة', 'عشرة', 'أحد عشر', 'اثنا عشر', 'ثلاثة عشر', 'أربعة عشر', 'خمسة عشر', 'ستة عشر', 'سبعة عشر', 'ثمانية عشر', 'تسعة عشر'];
+  const tens = ['', '', 'عشرون', 'ثلاثون', 'أربعون', 'خمسون', 'ستون', 'سبعون', 'ثمانون', 'تسعون'];
+  const hundreds = ['', 'مائة', 'مئتان', 'ثلاثمائة', 'أربعمائة', 'خمسمائة', 'ستمائة', 'سبعمائة', 'ثمانمائة', 'تسعمائة'];
+
+  const convertGroup = (n: number): string => {
+    let result = '';
+    const h = Math.floor(n / 100);
+    const t = n % 100;
+    
+    if (h > 0) {
+      result += hundreds[h];
+    }
+    
+    if (t > 0) {
+      if (result) result += ' و ';
+      if (t < 20) {
+        result += ones[t];
+      } else {
+        const o = t % 10;
+        const te = Math.floor(t / 10);
+        if (o > 0) {
+          result += ones[o] + ' و ' + tens[te];
+        } else {
+          result += tens[te];
+        }
+      }
+    }
+    return result;
+  };
+
+  const integerPart = Math.floor(Math.abs(num));
+  const decimalPart = Math.round((Math.abs(num) - integerPart) * 100);
+
+  let parts: string[] = [];
+  
+  // Millions
+  const millions = Math.floor(integerPart / 1000000);
+  if (millions === 1) parts.push('مليون');
+  else if (millions === 2) parts.push('مليونان');
+  else if (millions >= 3 && millions <= 10) parts.push(convertGroup(millions) + ' ملايين');
+  else if (millions > 10) parts.push(convertGroup(millions) + ' مليون');
+
+  // Thousands
+  const thousands = Math.floor((integerPart % 1000000) / 1000);
+  if (thousands === 1) parts.push('ألف');
+  else if (thousands === 2) parts.push('ألفان');
+  else if (thousands >= 3 && thousands <= 10) parts.push(convertGroup(thousands) + ' آلاف');
+  else if (thousands > 10) parts.push(convertGroup(thousands) + ' ألف');
+
+  // Ones / Hundreds
+  const remainder = integerPart % 1000;
+  if (remainder > 0) {
+    parts.push(convertGroup(remainder));
+  }
+
+  let fullText = parts.join(' و ');
+  if (!fullText) fullText = 'صفر';
+
+  const currencyUnitAr: Record<string, string> = {
+    SYP: 'ليرة سورية',
+    USD: 'دولار أمريكي',
+    EUR: 'يورو',
+    SAR: 'ريال سعودي',
+    AED: 'درهم إماراتي',
+    TRY: 'ليرة تركية',
+    JOD: 'دينار أردني',
+    KWD: 'دينار كويتي',
+    IQD: 'دينار عراقي',
+    EGP: 'جنيه مصري',
+    QAR: 'ريال قطري',
+    GBP: 'جنيه إسترليني'
+  };
+
+  const subUnitAr: Record<string, string> = {
+    SYP: 'قرش',
+    USD: 'سنت',
+    EUR: 'سنت',
+    SAR: 'هللة',
+    AED: 'فلس',
+    TRY: 'قرش',
+    JOD: 'قرش',
+    KWD: 'فلس',
+    IQD: 'فلس',
+    EGP: 'قرش',
+    QAR: 'درهم',
+    GBP: 'بنس'
+  };
+
+  const cName = currencyUnitAr[currency] || currency;
+  const sName = subUnitAr[currency] || 'جزء';
+
+  let output = `فقط ${fullText} ${cName}`;
+  if (decimalPart > 0) {
+    output += ` و ${convertGroup(decimalPart)} ${sName}`;
+  }
+  return output + ' لا غير';
+}
+
+/**
+ * Converts numbers into English words
+ */
+export function numberToEnglishWords(num: number, currency: string = 'USD'): string {
+  if (isNaN(num) || num === 0) return 'Zero only';
+  
+  const a = ['', 'one ', 'two ', 'three ', 'four ', 'five ', 'six ', 'seven ', 'eight ', 'nine ', 'ten ', 'eleven ', 'twelve ', 'thirteen ', 'fourteen ', 'fifteen ', 'sixteen ', 'seventeen ', 'eighteen ', 'nineteen '];
+  const b = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+
+  const inWords = (n: number): string => {
+    if (n === 0) return '';
+    if (n < 20) return a[n];
+    if (n < 100) return b[Math.floor(n / 10)] + (n % 10 !== 0 ? '-' + a[n % 10] : ' ');
+    if (n < 1000) return a[Math.floor(n / 100)] + 'hundred ' + inWords(n % 100);
+    if (n < 1000000) return inWords(Math.floor(n / 1000)) + 'thousand ' + inWords(n % 1000);
+    return inWords(Math.floor(n / 1000000)) + 'million ' + inWords(n % 1000000);
+  };
+
+  const integerPart = Math.floor(Math.abs(num));
+  const decimalPart = Math.round((Math.abs(num) - integerPart) * 100);
+
+  let result = inWords(integerPart).trim();
+  result = result.charAt(0).toUpperCase() + result.slice(1);
+
+  let output = `${result} ${currency}`;
+  if (decimalPart > 0) {
+    output += ` and ${decimalPart}/100`;
+  }
+  return `${output} only`;
+}
+

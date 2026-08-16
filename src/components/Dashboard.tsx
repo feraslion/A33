@@ -24,7 +24,13 @@ import {
   FileSpreadsheet,
   FileCode,
   Bell,
-  BellRing
+  BellRing,
+  Search,
+  Filter,
+  X,
+  SlidersHorizontal,
+  Eye,
+  FileText
 } from 'lucide-react';
 import { ERPState, logAuditEvent } from '../data/initialData';
 import { getTranslation, TranslationKey } from '../data/translations';
@@ -48,6 +54,15 @@ interface DashboardProps {
 export default function Dashboard({ state, onSetTab, onChangeState }: DashboardProps) {
   const lang = state.activeLanguage;
   const isRtl = lang === 'ar';
+
+  // Dashboard Audit Log Modal & Filters State
+  const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
+  const [auditSearch, setAuditSearch] = useState('');
+  const [auditUserFilter, setAuditUserFilter] = useState('all');
+  const [auditCategoryFilter, setAuditCategoryFilter] = useState('all');
+  const [auditStartDate, setAuditStartDate] = useState('');
+  const [auditEndDate, setAuditEndDate] = useState('');
+  const [selectedAuditLog, setSelectedAuditLog] = useState<any | null>(null);
   const t = (key: TranslationKey) => getTranslation(lang, key);
 
   // System health database sizing
@@ -104,6 +119,111 @@ export default function Dashboard({ state, onSetTab, onChangeState }: DashboardP
   const isBackupFailedAlert = realAutoBackupFailed || simulateBackupFailure;
 
   const activeAlertsCount = (isBackupFailedAlert ? 1 : 0) + (isStorageNearlyReached ? 1 : 0);
+
+  // Dashboard-facing Audit logs categorization and filtering helpers
+  const getEventCategory = (log: any) => {
+    const en = log.actionEn.toLowerCase();
+    if (en.includes('login') || en.includes('logged in')) return 'auth';
+    if (en.includes('backup') || en.includes('retention') || en.includes('prun') || en.includes('clean')) return 'backup';
+    if (en.includes('invoice') || en.includes('sale') || en.includes('purchase')) return 'invoice';
+    if (en.includes('voucher') || en.includes('cash') || en.includes('receipt') || en.includes('payment')) return 'finance';
+    if (en.includes('settings') || en.includes('branch') || en.includes('currency') || en.includes('rate')) return 'settings';
+    return 'system';
+  };
+
+  const getCategoryBadge = (category: string) => {
+    switch (category) {
+      case 'auth':
+        return {
+          label: isRtl ? 'أمان وتسجيل دخول' : 'Security & Login',
+          classes: 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400 border-blue-100 dark:border-blue-900/30'
+        };
+      case 'backup':
+        return {
+          label: isRtl ? 'قواعد بيانات ونسخ احتياطي' : 'Database & Backup',
+          classes: 'bg-purple-50 text-purple-700 dark:bg-purple-950/30 dark:text-purple-400 border-purple-100 dark:border-purple-900/30'
+        };
+      case 'invoice':
+        return {
+          label: isRtl ? 'المبيعات والمشتريات' : 'Sales & Sourcing',
+          classes: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400 border-emerald-100 dark:border-emerald-900/30'
+        };
+      case 'finance':
+        return {
+          label: isRtl ? 'المالية والخزينة' : 'Finance & Vault',
+          classes: 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400 border-amber-100 dark:border-amber-900/30'
+        };
+      case 'settings':
+        return {
+          label: isRtl ? 'إعدادات النظام' : 'System Settings',
+          classes: 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-400 border-indigo-100 dark:border-indigo-900/30'
+        };
+      default:
+        return {
+          label: isRtl ? 'عمليات عامة' : 'General System',
+          classes: 'bg-gray-50 text-gray-700 dark:bg-gray-800/50 dark:text-gray-400 border-gray-100 dark:border-gray-800'
+        };
+    }
+  };
+
+  const uniqueUsers = Array.from(new Set(state.auditLogs.map(log => log.username)));
+
+  const filteredLogs = state.auditLogs.filter(log => {
+    const searchLower = auditSearch.toLowerCase();
+    const matchesSearch = !auditSearch || 
+      log.actionEn.toLowerCase().includes(searchLower) ||
+      log.actionAr.toLowerCase().includes(searchLower) ||
+      log.detailsEn.toLowerCase().includes(searchLower) ||
+      log.detailsAr.toLowerCase().includes(searchLower) ||
+      log.username.toLowerCase().includes(searchLower) ||
+      log.ipAddress.toLowerCase().includes(searchLower);
+
+    const matchesUser = auditUserFilter === 'all' || log.username === auditUserFilter;
+    const matchesCategory = auditCategoryFilter === 'all' || getEventCategory(log) === auditCategoryFilter;
+
+    const logDate = new Date(log.timestamp);
+    let matchesStartDate = true;
+    if (auditStartDate) {
+      const start = new Date(auditStartDate);
+      start.setHours(0, 0, 0, 0);
+      matchesStartDate = logDate >= start;
+    }
+    let matchesEndDate = true;
+    if (auditEndDate) {
+      const end = new Date(auditEndDate);
+      end.setHours(23, 59, 59, 999);
+      matchesEndDate = logDate <= end;
+    }
+
+    return matchesSearch && matchesUser && matchesCategory && matchesStartDate && matchesEndDate;
+  });
+
+  const handleExportFilteredLogs = () => {
+    try {
+      const dataStr = JSON.stringify(filteredLogs, null, 2);
+      const blob = new Blob([dataStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `fatih_erp_dashboard_audit_report_${new Date().toISOString().slice(0,10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error('Failed to export audit report:', e);
+    }
+  };
+
+  const isFilterActive = auditSearch !== '' || auditUserFilter !== 'all' || auditCategoryFilter !== 'all' || auditStartDate !== '' || auditEndDate !== '';
+
+  const clearAllFilters = () => {
+    setAuditSearch('');
+    setAuditUserFilter('all');
+    setAuditCategoryFilter('all');
+    setAuditStartDate('');
+    setAuditEndDate('');
+  };
 
   const fetchBackupInfo = () => {
     try {
@@ -714,7 +834,7 @@ export default function Dashboard({ state, onSetTab, onChangeState }: DashboardP
             <ArrowRightLeft className="w-4.5 h-4.5 text-indigo-500" />
             {t('recentTransactions')}
           </h3>
-          <div className="space-y-3 max-h-56 overflow-y-auto pr-1">
+          <div className="space-y-3 max-h-56 overflow-y-auto pr-1 mb-2">
             {state.auditLogs.slice(0, 4).map(log => (
               <div key={log.id} className="flex justify-between items-start text-xs border-b border-gray-50 dark:border-gray-800/50 pb-3 last:border-0 last:pb-0">
                 <div>
@@ -729,6 +849,16 @@ export default function Dashboard({ state, onSetTab, onChangeState }: DashboardP
                 </div>
               </div>
             ))}
+          </div>
+          <div className="mt-4 pt-3 border-t border-gray-100 dark:border-gray-800 flex justify-end">
+            <button
+              type="button"
+              onClick={() => setIsAuditModalOpen(true)}
+              className="text-xs font-extrabold text-indigo-600 dark:text-indigo-400 hover:text-indigo-750 flex items-center gap-1 cursor-pointer transition-colors"
+            >
+              <Activity className="w-3.5 h-3.5" />
+              <span>{isRtl ? 'عرض لوحة تدقيق الأنشطة كاملة' : 'View Full Activity Trail'} &rarr;</span>
+            </button>
           </div>
         </div>
 
@@ -1082,6 +1212,294 @@ export default function Dashboard({ state, onSetTab, onChangeState }: DashboardP
           </div>
         </div>
       </div>
+
+      {/* FILTERABLE ACTIVITY LOGS MODAL OVERLAY */}
+      {isAuditModalOpen && (
+        <div className="fixed inset-0 bg-black/55 z-50 flex items-center justify-center p-4 md:p-6 backdrop-blur-xs">
+          <div className="bg-white dark:bg-gray-950 border border-gray-150 dark:border-gray-800 rounded-2xl w-full max-w-5xl h-[85vh] shadow-2xl flex flex-col overflow-hidden animate-fade-in text-xs">
+            
+            {/* Modal Header */}
+            <div className="flex items-center justify-between p-4 border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50">
+              <div className="flex items-center gap-2">
+                <Activity className="w-5 h-5 text-indigo-500 animate-pulse" />
+                <h3 className="font-extrabold text-sm text-gray-900 dark:text-white uppercase tracking-wider">
+                  {isRtl ? 'سجل تدقيق أمن العمليات - لوحة الأنشطة الشاملة' : 'System Audit Registry - Security Activity Control'}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsAuditModalOpen(false)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-sm font-extrabold cursor-pointer transition-colors p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Modal Body & Filters */}
+            <div className="flex-1 overflow-y-auto p-5 space-y-4" style={{ direction: isRtl ? 'rtl' : 'ltr' }}>
+              
+              {/* Filtering Controls */}
+              <div className="bg-gray-50/50 dark:bg-gray-900/30 border border-gray-100 dark:border-gray-800 p-4 rounded-xl space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-gray-100 dark:border-gray-800 pb-2">
+                  <span className="font-bold text-gray-700 dark:text-gray-300 flex items-center gap-1.5 text-xs">
+                    <SlidersHorizontal className="w-4 h-4 text-indigo-500" />
+                    {isRtl ? 'تصفية وفرز السجلات الحية' : 'Real-time Filters and Data Queries'}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    {isFilterActive && (
+                      <button
+                        type="button"
+                        onClick={clearAllFilters}
+                        className="text-[10px] font-bold text-red-500 hover:text-red-600 flex items-center gap-0.5 px-2 py-0.5 rounded bg-red-50 dark:bg-red-950/20 cursor-pointer"
+                      >
+                        <X className="w-3 h-3" />
+                        {isRtl ? 'إعادة تعيين' : 'Reset'}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleExportFilteredLogs}
+                      className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 flex items-center gap-1 px-2.5 py-1 rounded bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 shadow-2xs cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      {isRtl ? 'تصدير التقرير الحالي' : 'Export Logs'}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 text-left">
+                  {/* Search input */}
+                  <div className="relative">
+                    <Search className="absolute top-2.5 left-3 w-4 h-4 text-gray-400" />
+                    <input
+                      type="text"
+                      value={auditSearch}
+                      onChange={e => setAuditSearch(e.target.value)}
+                      placeholder={isRtl ? 'البحث بالعملية، الوصف، المستخدم...' : 'Search event, description...'}
+                      className="w-full pl-9 pr-3 py-1.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg text-xs outline-hidden focus:border-indigo-500 text-gray-800 dark:text-gray-200"
+                    />
+                  </div>
+
+                  {/* Category Dropdown */}
+                  <div>
+                    <select
+                      value={auditCategoryFilter}
+                      onChange={e => setAuditCategoryFilter(e.target.value)}
+                      className="w-full px-3 py-1.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg text-xs outline-hidden text-gray-800 dark:text-gray-200"
+                    >
+                      <option value="all">{isRtl ? 'جميع التصنيفات' : 'All Categories'}</option>
+                      <option value="auth">{isRtl ? 'أمان وتسجيل دخول' : 'Security & Login'}</option>
+                      <option value="backup">{isRtl ? 'قواعد بيانات ونسخ احتياطي' : 'Database & Backup'}</option>
+                      <option value="invoice">{isRtl ? 'المبيعات والمشتريات' : 'Sales & Sourcing'}</option>
+                      <option value="finance">{isRtl ? 'المالية والخزينة' : 'Finance & Vault'}</option>
+                      <option value="settings">{isRtl ? 'إعدادات النظام' : 'System Settings'}</option>
+                    </select>
+                  </div>
+
+                  {/* User Dropdown */}
+                  <div>
+                    <select
+                      value={auditUserFilter}
+                      onChange={e => setAuditUserFilter(e.target.value)}
+                      className="w-full px-3 py-1.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg text-xs outline-hidden text-gray-800 dark:text-gray-200"
+                    >
+                      <option value="all">{isRtl ? 'جميع المستخدمين' : 'All Users'}</option>
+                      {uniqueUsers.map(u => (
+                        <option key={u} value={u}>@{u}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Start Date */}
+                  <div className="relative">
+                    <input
+                      type="date"
+                      value={auditStartDate}
+                      onChange={e => setAuditStartDate(e.target.value)}
+                      className="w-full px-3 py-1.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg text-xs outline-hidden text-gray-800 dark:text-gray-200"
+                      title={isRtl ? 'تاريخ البداية' : 'Start Date'}
+                    />
+                  </div>
+
+                  {/* End Date */}
+                  <div className="relative">
+                    <input
+                      type="date"
+                      value={auditEndDate}
+                      onChange={e => setAuditEndDate(e.target.value)}
+                      className="w-full px-3 py-1.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg text-xs outline-hidden text-gray-800 dark:text-gray-200"
+                      title={isRtl ? 'تاريخ النهاية' : 'End Date'}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Table of logs */}
+              <div className="overflow-hidden border border-gray-150 dark:border-gray-800 rounded-xl shadow-2xs">
+                <div className="overflow-y-auto max-h-[50vh]">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-gray-50 dark:bg-gray-800/60 text-gray-400 font-bold uppercase border-b border-gray-150 dark:border-gray-800 text-left rtl:text-right">
+                        <th className="p-3.5">{isRtl ? 'التاريخ والوقت' : 'Timestamp'}</th>
+                        <th className="p-3.5">{isRtl ? 'نوع العملية' : 'Category'}</th>
+                        <th className="p-3.5">{isRtl ? 'المجال والحدث' : 'Event / Action'}</th>
+                        <th className="p-3.5">{isRtl ? 'التفاصيل' : 'Details'}</th>
+                        <th className="p-3.5">{isRtl ? 'المستخدم' : 'Operator'}</th>
+                        <th className="p-3.5 text-right rtl:text-left"></th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100 dark:divide-gray-800 font-medium">
+                      {filteredLogs.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="p-12 text-center text-gray-400">
+                            <SlidersHorizontal className="w-8 h-8 mx-auto text-gray-300 mb-2 animate-bounce" />
+                            <p className="font-bold">{isRtl ? 'لا توجد سجلات تطابق الفلتر المدخل.' : 'No audit records matched your current filters.'}</p>
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredLogs.map(log => {
+                          const cat = getEventCategory(log);
+                          const badge = getCategoryBadge(cat);
+                          const isFailed = (log.detailsEn + log.actionEn + log.detailsAr + log.actionAr).toLowerCase().includes('fail') || 
+                                           (log.detailsEn + log.actionEn + log.detailsAr + log.actionAr).toLowerCase().includes('error') ||
+                                           (log.detailsEn + log.actionEn + log.detailsAr + log.actionAr).includes('فشل') ||
+                                           (log.detailsEn + log.actionEn + log.detailsAr + log.actionAr).includes('خطأ');
+
+                          return (
+                            <tr key={log.id} className="hover:bg-gray-50/50 dark:hover:bg-gray-800/10 transition-colors">
+                              <td className="p-3.5 font-mono text-[10px] text-gray-400 whitespace-nowrap">
+                                {new Date(log.timestamp).toLocaleString()}
+                              </td>
+                              <td className="p-3.5 whitespace-nowrap">
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${badge.classes}`}>
+                                  {badge.label}
+                                </span>
+                              </td>
+                              <td className="p-3.5 min-w-[150px]">
+                                <div className="flex items-center gap-1.5">
+                                  <span className={`w-1.5 h-1.5 rounded-full ${isFailed ? 'bg-red-500 animate-ping' : 'bg-emerald-500'}`} />
+                                  <span className="font-bold text-gray-900 dark:text-gray-100 text-[11.5px] block text-left rtl:text-right">
+                                    {isRtl ? log.actionAr : log.actionEn}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="p-3.5 max-w-xs truncate text-gray-500 dark:text-gray-400 text-left rtl:text-right">
+                                {isRtl ? log.detailsAr : log.detailsEn}
+                              </td>
+                              <td className="p-3.5 whitespace-nowrap font-semibold text-gray-600 dark:text-gray-300">
+                                <span className="bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded-md text-[10px] font-mono text-gray-500 dark:text-gray-400">
+                                  @{log.username}
+                                </span>
+                              </td>
+                              <td className="p-3.5 text-right rtl:text-left whitespace-nowrap">
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedAuditLog(log)}
+                                  className="p-1 text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg cursor-pointer transition-colors"
+                                  title={isRtl ? 'تفاصيل السجل' : 'View Log Details'}
+                                >
+                                  <Eye className="w-4 h-4" />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 border-t border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50 flex justify-between items-center">
+              <p className="text-[10px] text-gray-400">
+                {isRtl ? `مستعرضاً ${filteredLogs.length} من أصل ${state.auditLogs.length} سجلات حية` : `Showing ${filteredLogs.length} of ${state.auditLogs.length} live records`}
+              </p>
+              <button
+                type="button"
+                onClick={() => setIsAuditModalOpen(false)}
+                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl cursor-pointer text-xs"
+              >
+                {isRtl ? 'إغلاق اللوحة' : 'Close Dashboard Logs'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Embedded Audit Detail Card Submodal */}
+      {selectedAuditLog && (
+        <div className="fixed inset-0 bg-black/50 z-55 flex items-center justify-center p-4 backdrop-blur-xs">
+          <div className="bg-white dark:bg-gray-950 border border-gray-150 dark:border-gray-800 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden animate-fade-in text-xs">
+            <div className="flex items-center justify-between p-4 border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50">
+              <div className="flex items-center gap-2">
+                <FileText className="w-4.5 h-4.5 text-indigo-500" />
+                <span className="font-extrabold text-xs uppercase tracking-wider text-gray-700 dark:text-gray-300">
+                  {isRtl ? 'تفاصيل سجل الأمان الرقمي' : 'Digital Security Log Details'}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedAuditLog(null)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-xs font-bold cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 text-left rtl:text-right" style={{ direction: isRtl ? 'rtl' : 'ltr' }}>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wide">{isRtl ? 'مُعرّف السجل الفريد' : 'Log UUID'}</p>
+                  <p className="font-mono text-gray-755 dark:text-gray-300 mt-0.5 font-bold">{selectedAuditLog.id}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wide">{isRtl ? 'التاريخ والوقت الكامل' : 'Exact Timestamp'}</p>
+                  <p className="font-mono text-gray-755 dark:text-gray-300 mt-0.5">{new Date(selectedAuditLog.timestamp).toISOString()}</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 border-t border-gray-50 dark:border-gray-900 pt-3">
+                <div>
+                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wide">{isRtl ? 'المشغل والمسؤول' : 'Authorized Operator'}</p>
+                  <p className="font-semibold text-gray-755 dark:text-gray-300 mt-0.5">@{selectedAuditLog.username} (ID: {selectedAuditLog.userId})</p>
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wide">{isRtl ? 'عنوان IP للجهاز' : 'Diagnostic Host IP'}</p>
+                  <p className="font-mono text-gray-755 dark:text-gray-300 mt-0.5">{selectedAuditLog.ipAddress}</p>
+                </div>
+              </div>
+
+              <div className="border-t border-gray-50 dark:border-gray-900 pt-3 space-y-1">
+                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wide">{isRtl ? 'الحدث الرئيسي والمهمة' : 'Main Event Action'}</p>
+                <div className="p-2.5 bg-gray-50 dark:bg-gray-900 rounded-lg">
+                  <p className="font-bold text-indigo-600 block text-left rtl:text-right">{selectedAuditLog.actionEn}</p>
+                  <p className="font-bold text-indigo-600 block mt-0.5 text-left rtl:text-right">{selectedAuditLog.actionAr}</p>
+                </div>
+              </div>
+
+              <div className="border-t border-gray-50 dark:border-gray-900 pt-3 space-y-1">
+                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wide">{isRtl ? 'الوصف والتفاصيل الأمنية' : 'Immutable Event Details'}</p>
+                <div className="p-3 bg-gray-50 dark:bg-gray-900 rounded-lg text-gray-700 dark:text-gray-300 leading-relaxed font-semibold font-semibold">
+                  <p className="block text-left rtl:text-right">{selectedAuditLog.detailsEn}</p>
+                  <p className="block mt-1 text-left rtl:text-right">{selectedAuditLog.detailsAr}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-3 border-t border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/30 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setSelectedAuditLog(null)}
+                className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg cursor-pointer"
+              >
+                {isRtl ? 'إغلاق التفاصيل' : 'Close Audit View'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

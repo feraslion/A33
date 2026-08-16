@@ -1,6 +1,6 @@
 {
   "name": "Enterprise ERP System",
-  "description": "An enterprise-grade ERP system for accounting, inventory, POS, and sales management with multi-currency and multi-company support.",
-  "requestFramePermissions": [],
+  "description": "An enterprise-grade ERP system for accounting, inventory, POS, and sales management with multi-currency, thermal/A4 printing, and barcode scanner support.",
+  "requestFramePermissions": ["camera"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
